@@ -2,7 +2,7 @@
   <img src="gamer_translator/assets/icon-128.png" alt="Gamer Translator ikon" width="128" height="128">
 </p>
 
-# Gamer Translator v1.0
+# Gamer Translator
 
 A Gamer Translator egy önálló Windows asztali alkalmazás, amely a `chatgpt.com` oldalt saját ablakban nyitja meg, és a képkivágásos fordítási munkafolyamatot közvetlenül ebből az ablakból kezeli.
 
