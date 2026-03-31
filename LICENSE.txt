@@ -1,0 +1,19 @@
+Copyright (c) 2026 ColorsASD
+Minden jog fenntartva.
+
+Ez a projekt és a hozzá tartozó összes forráskód, dokumentáció, erőforrás és egyéb állomány saját tulajdonú.
+
+Kifejezett, előzetes és írásos engedély nélkül tilos:
+
+- a projekt vagy annak bármely részének használata
+- a projekt vagy annak bármely részének másolása
+- a projekt vagy annak bármely részének módosítása
+- a projekt vagy annak bármely részének terjesztése
+- a projekt vagy annak bármely részének továbbadása, allicencelése vagy értékesítése
+- a projektből származékos mű készítése
+
+A repository nyilvános elérhetősége önmagában nem jelent felhasználási engedélyt.
+
+A projekt kizárólag a szerzői jog tulajdonosának előzetes írásos hozzájárulásával használható fel.
+
+A szoftver és minden kapcsolódó állomány változtatás nélkül, garancia nélkül érhető el. A jogtulajdonos semmilyen közvetlen vagy közvetett kárért nem vállal felelősséget.
