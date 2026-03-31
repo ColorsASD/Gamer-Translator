@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .defaults import DEFAULT_SETTINGS
+from .defaults import DEFAULT_BIDIRECTIONAL_PROMPT, DEFAULT_SETTINGS, LEGACY_BIDIRECTIONAL_PROMPT, PREVIOUS_BIDIRECTIONAL_PROMPT
 
 
 def default_app_data_dir() -> Path:
@@ -45,6 +45,7 @@ class AppSettings:
         raw = raw or {}
         type_out_hotkey = str(raw.get("typeOutHotkey", DEFAULT_SETTINGS["typeOutHotkey"]) or DEFAULT_SETTINGS["typeOutHotkey"])
         screen_clip_hotkey = str(raw.get("screenClipHotkey", DEFAULT_SETTINGS["screenClipHotkey"]) or DEFAULT_SETTINGS["screenClipHotkey"])
+        prompt_template = str(raw.get("promptTemplate", DEFAULT_SETTINGS["promptTemplate"]) or DEFAULT_SETTINGS["promptTemplate"])
 
         if "screenClipHotkey" not in raw and type_out_hotkey == "Ctrl+Alt+Shift+V":
             type_out_hotkey = str(DEFAULT_SETTINGS["typeOutHotkey"])
@@ -55,11 +56,14 @@ class AppSettings:
         if screen_clip_hotkey == "F5":
             screen_clip_hotkey = str(DEFAULT_SETTINGS["screenClipHotkey"])
 
+        if prompt_template in {LEGACY_BIDIRECTIONAL_PROMPT, PREVIOUS_BIDIRECTIONAL_PROMPT}:
+            prompt_template = DEFAULT_BIDIRECTIONAL_PROMPT
+
         return cls(
             monitoring_enabled=bool(raw.get("monitoringEnabled", DEFAULT_SETTINGS["monitoringEnabled"])),
             chatgpt_url=str(raw.get("chatgptUrl", DEFAULT_SETTINGS["chatgptUrl"]) or DEFAULT_SETTINGS["chatgptUrl"]),
             keep_chatgpt_in_background=bool(raw.get("keepChatGptInBackground", DEFAULT_SETTINGS["keepChatGptInBackground"])),
-            prompt_template=str(raw.get("promptTemplate", DEFAULT_SETTINGS["promptTemplate"]) or DEFAULT_SETTINGS["promptTemplate"]),
+            prompt_template=prompt_template,
             auto_submit=True,
             copy_response_to_clipboard=bool(raw.get("copyResponseToClipboard", DEFAULT_SETTINGS["copyResponseToClipboard"])),
             type_out_hotkey_enabled=bool(raw.get("typeOutHotkeyEnabled", DEFAULT_SETTINGS["typeOutHotkeyEnabled"])),
