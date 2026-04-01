@@ -15,6 +15,11 @@ A Gamer Translator egy önálló Windows asztali alkalmazás, amely a `chatgpt.c
 - a kész fordítás automatikus visszamásolása a vágólapra
 - a mentett fordítás karakterenkénti begépelése gyorsgombbal
 - szerkeszthető gyorsgombok lenyomásos rögzítéssel
+- tálcaikon dupla kattintásos elrejtéssel és visszahozással
+- háttérben tovább futó ChatGPT oldal lekicsinyítés vagy eltüntetés után is
+- képernyő tetején megjelenő fordítási overlay `Betöltés...` állapottal
+- egy példányos indítás, ahol a második megnyitás a meglévő ablakot aktiválja
+- állítható overlay láthatóság és megjelenési idő
 
 ## Alap gyorsgombok
 
@@ -43,7 +48,7 @@ PowerShellből a projekt gyökérmappájában:
 .\build.ps1
 ```
 
-Az elkészült program a `dist\Gamer Translator` mappába kerül.
+Az elkészült egyfájlos program a `release\Gamer Translator.exe` fájlba kerül.
 
 ## Használat
 
@@ -52,7 +57,16 @@ Az elkészült program a `dist\Gamer Translator` mappába kerül.
 3. A `Prompt elküldése` gombbal küldd el a kézi promptot az aktuális beszélgetésbe.
 4. Használd a képkivágást, vagy illessz be képet a vágólapra.
 5. Várd meg a fordítást.
-6. A kész szöveget illeszd be vágólapról, vagy használd a begépelési gyorsgombot.
+6. Ha az app nincs előtérben, a fordítás felül egy overlay blokkban is megjelenik.
+7. A kész szöveget illeszd be vágólapról, vagy használd a begépelési gyorsgombot.
+
+## Tálca és háttérmód
+
+- az `X` gomb tálcára rejti az alkalmazást
+- a tálcaikon dupla kattintásra elrejti vagy visszahozza az ablakot
+- jobb kattintással `Eltüntetés` és `Kilépés` menü érhető el
+- eltüntetve vagy lekicsinyítve is tovább fut a fordítási folyamat
+- a programból egyszerre csak egy példány futtatható
 
 ## Megjegyzés
 
