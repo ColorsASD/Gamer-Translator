@@ -35,6 +35,8 @@ class AppSettings:
     type_out_hotkey: str = str(DEFAULT_SETTINGS["typeOutHotkey"])
     screen_clip_hotkey_enabled: bool = bool(DEFAULT_SETTINGS["screenClipHotkeyEnabled"])
     screen_clip_hotkey: str = str(DEFAULT_SETTINGS["screenClipHotkey"])
+    overlay_opacity_percent: int = int(DEFAULT_SETTINGS["overlayOpacityPercent"])
+    overlay_duration_seconds: int = int(DEFAULT_SETTINGS["overlayDurationSeconds"])
     page_load_delay_ms: int = int(DEFAULT_SETTINGS["pageLoadDelayMs"])
     page_ready_timeout_ms: int = int(DEFAULT_SETTINGS["pageReadyTimeoutMs"])
     before_submit_delay_ms: int = int(DEFAULT_SETTINGS["beforeSubmitDelayMs"])
@@ -70,6 +72,8 @@ class AppSettings:
             type_out_hotkey=type_out_hotkey,
             screen_clip_hotkey_enabled=bool(raw.get("screenClipHotkeyEnabled", DEFAULT_SETTINGS["screenClipHotkeyEnabled"])),
             screen_clip_hotkey=screen_clip_hotkey,
+            overlay_opacity_percent=coerce_int(raw.get("overlayOpacityPercent"), DEFAULT_SETTINGS["overlayOpacityPercent"]),
+            overlay_duration_seconds=coerce_int(raw.get("overlayDurationSeconds"), DEFAULT_SETTINGS["overlayDurationSeconds"]),
             page_load_delay_ms=coerce_int(raw.get("pageLoadDelayMs"), DEFAULT_SETTINGS["pageLoadDelayMs"]),
             page_ready_timeout_ms=coerce_int(raw.get("pageReadyTimeoutMs"), DEFAULT_SETTINGS["pageReadyTimeoutMs"]),
             before_submit_delay_ms=coerce_int(raw.get("beforeSubmitDelayMs"), DEFAULT_SETTINGS["beforeSubmitDelayMs"]),
@@ -89,6 +93,8 @@ class AppSettings:
             "typeOutHotkey": raw["type_out_hotkey"],
             "screenClipHotkeyEnabled": raw["screen_clip_hotkey_enabled"],
             "screenClipHotkey": raw["screen_clip_hotkey"],
+            "overlayOpacityPercent": raw["overlay_opacity_percent"],
+            "overlayDurationSeconds": raw["overlay_duration_seconds"],
             "pageLoadDelayMs": raw["page_load_delay_ms"],
             "pageReadyTimeoutMs": raw["page_ready_timeout_ms"],
             "beforeSubmitDelayMs": raw["before_submit_delay_ms"],

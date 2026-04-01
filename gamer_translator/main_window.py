@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from PySide6.QtCore import QEasingCurve, QBuffer, QEvent, QEventLoop, QIODevice, QPoint, Property, QPropertyAnimation, QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QCloseEvent, QGuiApplication, QIcon, QKeySequence, QMouseEvent, QPixmap
+from PySide6.QtGui import QAction, QCloseEvent, QCursor, QGuiApplication, QIcon, QKeySequence, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -29,11 +29,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSpinBox,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -50,6 +53,7 @@ if sys.platform == "win32":
     dwmapi = ctypes.windll.dwmapi
     ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 
+    HWND_TOPMOST = -1
     MOD_ALT = 0x0001
     MOD_CONTROL = 0x0002
     MOD_SHIFT = 0x0004
@@ -151,6 +155,16 @@ if sys.platform == "win32":
 
     user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
     user32.SendInput.restype = wintypes.UINT
+    user32.SetWindowPos.argtypes = (
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    )
+    user32.SetWindowPos.restype = wintypes.BOOL
     dwmapi.DwmSetWindowAttribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
     dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
 
@@ -408,6 +422,132 @@ class TitleBar(QFrame):
         super().mouseDoubleClickEvent(event)
 
 
+class BrowserBackgroundHost(QWidget):
+    def __init__(self) -> None:
+        super().__init__(
+            None,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnBottomHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("background: #111111;")
+        self.host_layout = QVBoxLayout(self)
+        self.host_layout.setContentsMargins(0, 0, 0, 0)
+        self.host_layout.setSpacing(0)
+
+    def prepare_geometry(self, reference_widget: QWidget) -> None:
+        screen = QGuiApplication.primaryScreen()
+        virtual_geometry = screen.virtualGeometry() if screen is not None else reference_widget.frameGeometry()
+        width = max(reference_widget.width(), 1280)
+        height = max(reference_widget.height(), 900)
+        self.setGeometry(virtual_geometry.right() + 120, virtual_geometry.top() + 120, width, height)
+
+
+class TranslationOverlay(QWidget):
+    def __init__(self) -> None:
+        super().__init__(
+            None,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+            | Qt.WindowType.WindowTransparentForInput,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.set_overlay_opacity_percent(int(DEFAULT_SETTINGS["overlayOpacityPercent"]))
+
+        self.hide_timer = QTimer(self)
+        self.hide_timer.setSingleShot(True)
+        self.hide_timer.timeout.connect(self.hide)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.panel = QFrame(self)
+        self.panel.setObjectName("translationOverlayPanel")
+        self.panel_layout = QVBoxLayout(self.panel)
+        self.panel_layout.setContentsMargins(22, 16, 22, 16)
+        self.panel_layout.setSpacing(0)
+
+        self.label = QLabel("")
+        self.label.setObjectName("translationOverlayLabel")
+        self.label.setWordWrap(True)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.panel_layout.addWidget(self.label)
+        layout.addWidget(self.panel)
+
+        self.setStyleSheet(
+            """
+            #translationOverlayPanel {
+                background: rgba(0, 0, 0, 255);
+                border-radius: 18px;
+            }
+            #translationOverlayLabel {
+                color: #ffffff;
+                font-size: 22px;
+                font-weight: 700;
+            }
+            """
+        )
+
+    def show_message(self, text: str, *, duration_ms: int | None = 20000) -> None:
+        cleaned_text = str(text or "").strip()
+
+        if not cleaned_text:
+            return
+
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+
+        if screen is None:
+            return
+
+        geometry = screen.availableGeometry()
+        max_width = min(max(int(geometry.width() * 0.7), 420), 1100)
+        self.label.setText(cleaned_text)
+        self.label.setFixedWidth(max_width - 44)
+        self.label.adjustSize()
+        self.panel.adjustSize()
+        self.adjustSize()
+
+        pos_x = geometry.x() + max(0, (geometry.width() - self.width()) // 2)
+        pos_y = geometry.y() + max(28, int(geometry.height() * 0.045))
+        self.move(pos_x, pos_y)
+        self.show()
+        self.raise_()
+
+        if sys.platform == "win32":
+            hwnd = int(self.winId())
+
+            if hwnd != 0:
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0013)
+
+        self.hide_timer.stop()
+
+        if duration_ms is not None:
+            self.hide_timer.start(max(1000, int(duration_ms)))
+
+    def show_translation(self, text: str, *, duration_ms: int = 20000) -> None:
+        self.show_message(text, duration_ms=duration_ms)
+
+    def show_loading(self) -> None:
+        self.show_message("Betöltés...", duration_ms=None)
+
+    def hide_overlay(self) -> None:
+        self.hide_timer.stop()
+        self.hide()
+
+    def set_overlay_opacity_percent(self, percent: int) -> None:
+        safe_percent = max(1, min(100, int(percent)))
+        self.setWindowOpacity(safe_percent / 100.0)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -430,6 +570,14 @@ class MainWindow(QMainWindow):
         self.hotkey_errors: dict[str, str] = {}
         self.hotkey_pressed_states: dict[str, bool] = {}
         self.native_window_theme_applied = False
+        self.exit_requested = False
+        self.window_was_maximized_before_hide = False
+        self.tray_message_shown = False
+        self.browser_background_mode = False
+        self.tray_icon: QSystemTrayIcon | None = None
+        self.tray_toggle_action: QAction | None = None
+        self.browser_background_host = BrowserBackgroundHost()
+        self.translation_overlay = TranslationOverlay()
         self.hotkey_timer = QTimer(self)
         self.hotkey_timer.setInterval(35)
         self.hotkey_timer.timeout.connect(self._poll_hotkeys)
@@ -453,13 +601,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(1680, 980)
         self._apply_window_icon()
+        self._build_tray_icon()
         self._sync_window_buttons()
         QTimer.singleShot(0, self._register_hotkeys)
         QTimer.singleShot(0, self.open_chatgpt)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if not self.exit_requested and self.tray_icon is not None and self.tray_icon.isVisible():
+            event.ignore()
+            self._hide_to_tray(show_message=True)
+            return
+
         self.store.save_settings(self._read_settings_from_form())
         self._unregister_hotkeys()
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
+        self.browser_background_host.close()
+        self.translation_overlay.hide()
         super().closeEvent(event)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
@@ -469,6 +627,17 @@ class MainWindow(QMainWindow):
             self._apply_native_window_theme()
             self.native_window_theme_applied = True
 
+        if self.isVisible() and not self.isMinimized():
+            self._deactivate_background_browser_host()
+
+        self._sync_tray_toggle_action()
+        QTimer.singleShot(0, self._sync_browser_runtime_state)
+
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        super().hideEvent(event)
+        self._sync_tray_toggle_action()
+        QTimer.singleShot(0, self._sync_browser_runtime_state)
+
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._layout_overlay_widgets()
@@ -476,6 +645,14 @@ class MainWindow(QMainWindow):
     def changeEvent(self, event) -> None:  # type: ignore[override]
         if event.type() == QEvent.Type.WindowStateChange:
             self._sync_window_buttons()
+            self._sync_tray_toggle_action()
+
+            if self.isMinimized():
+                self._activate_background_browser_host()
+            elif self.isVisible():
+                self._deactivate_background_browser_host()
+
+            QTimer.singleShot(0, self._sync_browser_runtime_state)
 
         super().changeEvent(event)
 
@@ -523,11 +700,28 @@ class MainWindow(QMainWindow):
         self.type_out_hotkey = self._build_hotkey_edit()
         self.screen_clip_hotkey_enabled = QCheckBox("A Windows képkivágó nyíljon meg gyorsbillentyűvel")
         self.screen_clip_hotkey = self._build_hotkey_edit()
+        self.overlay_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.overlay_opacity_slider.setRange(1, 100)
+        self.overlay_opacity_slider.setSingleStep(1)
+        self.overlay_opacity_slider.setPageStep(10)
+        self.overlay_opacity_slider.valueChanged.connect(self._handle_overlay_opacity_slider_changed)
+        self.overlay_opacity_value_label = QLabel("10%")
+        self.overlay_opacity_value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.overlay_duration_seconds = self._build_spin_box(maximum=120, step=1)
+        self.overlay_duration_seconds.setMinimum(1)
+        self.overlay_duration_seconds.setSuffix(" mp")
         self.keep_chatgpt_in_background = QCheckBox("A ChatGPT maradjon háttérben, ne kapjon fókuszt")
         self.page_load_delay_ms = self._build_spin_box()
         self.page_ready_timeout_ms = self._build_spin_box(maximum=120000, step=1000)
         self.before_submit_delay_ms = self._build_spin_box()
         self.after_attach_delay_ms = self._build_spin_box()
+
+        overlay_opacity_row = QWidget()
+        overlay_opacity_layout = QHBoxLayout(overlay_opacity_row)
+        overlay_opacity_layout.setContentsMargins(0, 0, 0, 0)
+        overlay_opacity_layout.setSpacing(10)
+        overlay_opacity_layout.addWidget(self.overlay_opacity_slider, 1)
+        overlay_opacity_layout.addWidget(self.overlay_opacity_value_label)
 
         form_layout = QFormLayout()
         form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
@@ -537,6 +731,8 @@ class MainWindow(QMainWindow):
         form_layout.addRow("Képkivágási gyorsbillentyű", self.screen_clip_hotkey)
         form_layout.addRow("", self.type_out_hotkey_enabled)
         form_layout.addRow("Begépelési gyorsbillentyű", self.type_out_hotkey)
+        form_layout.addRow("Overlay láthatósága", overlay_opacity_row)
+        form_layout.addRow("Overlay megjelenési ideje (másodperc)", self.overlay_duration_seconds)
 
         settings_group = QGroupBox("Beállítások")
         settings_group.setLayout(form_layout)
@@ -621,10 +817,10 @@ class MainWindow(QMainWindow):
 
         self.content_surface = QFrame()
         self.content_surface.setObjectName("contentSurface")
-        content_layout = QVBoxLayout(self.content_surface)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-        content_layout.addWidget(self.browser)
+        self.content_layout = QVBoxLayout(self.content_surface)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(0)
+        self.content_layout.addWidget(self.browser)
         root_layout.addWidget(self.content_surface, 1)
 
         self.drawer_backdrop = DrawerBackdrop(self.content_surface)
@@ -878,11 +1074,153 @@ class MainWindow(QMainWindow):
         hotkey_value = hotkey_edit.keySequence().toString(QKeySequence.SequenceFormat.PortableText).strip()
         return hotkey_value or fallback
 
+    def _handle_overlay_opacity_slider_changed(self, value: int) -> None:
+        safe_value = max(1, min(100, int(value)))
+        self.overlay_opacity_value_label.setText(f"{safe_value}%")
+        self.translation_overlay.set_overlay_opacity_percent(safe_value)
+
     def _apply_window_icon(self) -> None:
         icon_path = resource_path("gamer_translator/assets/icon-128.png")
 
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
+
+    def _move_browser_to_widget(self, target_widget: QWidget, target_layout: QVBoxLayout) -> None:
+        current_parent = self.browser.parentWidget()
+
+        if current_parent is not None and current_parent.layout() is not None:
+            current_parent.layout().removeWidget(self.browser)
+
+        self.browser.setParent(target_widget)
+        target_layout.addWidget(self.browser)
+        self.browser.show()
+
+    def _activate_background_browser_host(self) -> None:
+        if self.browser_background_mode:
+            self.browser_background_host.prepare_geometry(self)
+            return
+
+        self.browser_background_host.prepare_geometry(self)
+        self._move_browser_to_widget(self.browser_background_host, self.browser_background_host.host_layout)
+        self.browser_background_host.show()
+        self.browser_background_mode = True
+        self._sync_browser_runtime_state()
+
+    def _deactivate_background_browser_host(self) -> None:
+        if not self.browser_background_mode:
+            return
+
+        self._move_browser_to_widget(self.content_surface, self.content_layout)
+        self.browser_background_host.hide()
+        self.browser_background_mode = False
+        self._layout_overlay_widgets()
+        self._sync_browser_runtime_state()
+
+    def _sync_browser_runtime_state(self) -> None:
+        if not hasattr(self, "browser"):
+            return
+
+        page = self.browser.page()
+
+        try:
+            page.setLifecycleState(QWebEnginePage.LifecycleState.Active)
+
+            if self._is_window_hidden_for_tray():
+                page.setVisible(True)
+            elif self.browser.isVisible():
+                page.setVisible(True)
+        except RuntimeError:
+            return
+
+    def _build_tray_icon(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        app = QApplication.instance()
+
+        if app is not None:
+            app.setQuitOnLastWindowClosed(False)
+
+        self.tray_icon = QSystemTrayIcon(self.windowIcon(), self)
+        self.tray_icon.setToolTip(APP_NAME)
+
+        tray_menu = QMenu(self)
+        self.tray_toggle_action = QAction("Eltüntetés", self)
+        self.tray_toggle_action.triggered.connect(self._toggle_tray_window_visibility)
+
+        quit_action = QAction("Kilépés", self)
+        quit_action.triggered.connect(self._quit_from_tray)
+
+        tray_menu.addAction(self.tray_toggle_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(quit_action)
+
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self._handle_tray_icon_activated)
+        self.tray_icon.show()
+        self._sync_tray_toggle_action()
+
+    def _handle_tray_icon_activated(self, reason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._toggle_tray_window_visibility()
+
+    def _toggle_tray_window_visibility(self) -> None:
+        if self._is_window_hidden_for_tray():
+            self._show_from_tray()
+            return
+
+        self._hide_to_tray(show_message=False)
+
+    def _is_window_hidden_for_tray(self) -> bool:
+        return not self.isVisible() or self.isMinimized()
+
+    def _sync_tray_toggle_action(self) -> None:
+        if self.tray_toggle_action is None:
+            return
+
+        self.tray_toggle_action.setText("Megjelenítés" if self._is_window_hidden_for_tray() else "Eltüntetés")
+
+    def _hide_to_tray(self, *, show_message: bool) -> None:
+        self.window_was_maximized_before_hide = bool(self.windowState() & Qt.WindowState.WindowMaximized)
+        self._activate_background_browser_host()
+        self.hide()
+        self._sync_browser_runtime_state()
+        self._sync_tray_toggle_action()
+
+        if show_message and self.tray_icon is not None and not self.tray_message_shown:
+            self.tray_icon.showMessage(
+                APP_NAME,
+                "Az alkalmazás a tálcán fut tovább. Dupla kattintással visszahozhatod.",
+                QSystemTrayIcon.MessageIcon.Information,
+                3000,
+            )
+            self.tray_message_shown = True
+
+    def _show_from_tray(self) -> None:
+        if self.window_was_maximized_before_hide:
+            self.showMaximized()
+        else:
+            self.showNormal()
+
+        self._deactivate_background_browser_host()
+        self.raise_()
+        self.activateWindow()
+        self._sync_window_buttons()
+        self._sync_browser_runtime_state()
+        self._sync_tray_toggle_action()
+
+    def show_from_external_request(self) -> None:
+        self._show_from_tray()
+
+    def _quit_from_tray(self) -> None:
+        self.exit_requested = True
+        app = QApplication.instance()
+
+        if app is not None:
+            app.quit()
+            return
+
+        self.close()
 
     def _apply_native_window_theme(self) -> None:
         if sys.platform != "win32":
@@ -932,6 +1270,7 @@ class MainWindow(QMainWindow):
     def save_settings(self) -> None:
         self.settings = self._read_settings_from_form()
         self.store.save_settings(self.settings)
+        self.translation_overlay.set_overlay_opacity_percent(self.settings.overlay_opacity_percent)
         self._register_hotkeys()
         self._set_live_status(self._hotkey_status_message("Beállítások elmentve."))
 
@@ -939,6 +1278,7 @@ class MainWindow(QMainWindow):
         self.settings = AppSettings.from_dict(DEFAULT_SETTINGS)
         self._apply_settings_to_form(self.settings)
         self.store.save_settings(self.settings)
+        self.translation_overlay.set_overlay_opacity_percent(self.settings.overlay_opacity_percent)
         self._register_hotkeys()
         self._set_live_status(self._hotkey_status_message("Az alapértékek vissza lettek állítva."))
 
@@ -1037,6 +1377,7 @@ class MainWindow(QMainWindow):
 
         try:
             self._save_last_run_status("Új kép érkezett a vágólapra.")
+            self._show_loading_overlay()
             self._ensure_chatgpt_page_loaded(reload_if_open=False)
             self._ensure_automation_ready()
             self._wait_with_events(self.settings.page_load_delay_ms)
@@ -1060,12 +1401,14 @@ class MainWindow(QMainWindow):
 
             if self.settings.copy_response_to_clipboard:
                 if not translated_text:
+                    self._hide_translation_overlay()
                     self._save_last_run_status("A kép elküldve, de a ChatGPT válasza nem lett kiolvasható.")
                     return
 
                 self.last_translated_text = translated_text
                 self.store.save_last_translated_text(translated_text)
                 self.clipboard.setText(translated_text)
+                self._show_translation_overlay(translated_text)
                 self._play_ready_sound()
                 self._save_last_run_status(f"A fordítás a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {self.settings.type_out_hotkey}")
                 return
@@ -1073,9 +1416,13 @@ class MainWindow(QMainWindow):
             if translated_text:
                 self.last_translated_text = translated_text
                 self.store.save_last_translated_text(translated_text)
+                self._show_translation_overlay(translated_text)
+            else:
+                self._hide_translation_overlay()
 
             self._save_last_run_status("A kép elküldve a ChatGPT-nek.")
         except Exception as error:  # noqa: BLE001
+            self._hide_translation_overlay()
             self._save_last_run_status(str(error))
             self._set_live_status(str(error))
         finally:
@@ -1102,6 +1449,25 @@ class MainWindow(QMainWindow):
     def _set_live_status(self, message: str) -> None:
         self.status_label.setText(message)
         self.top_status_label.setText(message)
+
+    def _should_show_translation_overlay(self) -> bool:
+        return self._is_window_hidden_for_tray() or self.browser_background_mode
+
+    def _show_loading_overlay(self) -> None:
+        if not self._should_show_translation_overlay():
+            return
+
+        self.translation_overlay.show_loading()
+
+    def _show_translation_overlay(self, translated_text: str) -> None:
+        if not self._should_show_translation_overlay():
+            return
+
+        duration_ms = max(1000, int(self.settings.overlay_duration_seconds) * 1000)
+        self.translation_overlay.show_translation(translated_text, duration_ms=duration_ms)
+
+    def _hide_translation_overlay(self) -> None:
+        self.translation_overlay.hide_overlay()
 
     def _register_hotkeys(self) -> None:
         if sys.platform != "win32":
@@ -1278,6 +1644,8 @@ class MainWindow(QMainWindow):
         self.screen_clip_hotkey_enabled.setChecked(settings.screen_clip_hotkey_enabled)
         self._set_hotkey_value(self.screen_clip_hotkey, settings.screen_clip_hotkey)
         self._set_hotkey_value(self.type_out_hotkey, settings.type_out_hotkey)
+        self.overlay_opacity_slider.setValue(settings.overlay_opacity_percent)
+        self.overlay_duration_seconds.setValue(settings.overlay_duration_seconds)
         self.page_load_delay_ms.setValue(settings.page_load_delay_ms)
         self.page_ready_timeout_ms.setValue(settings.page_ready_timeout_ms)
         self.before_submit_delay_ms.setValue(settings.before_submit_delay_ms)
@@ -1295,6 +1663,8 @@ class MainWindow(QMainWindow):
             type_out_hotkey=self._read_hotkey_value(self.type_out_hotkey, str(DEFAULT_SETTINGS["typeOutHotkey"])),
             screen_clip_hotkey_enabled=self.screen_clip_hotkey_enabled.isChecked(),
             screen_clip_hotkey=self._read_hotkey_value(self.screen_clip_hotkey, str(DEFAULT_SETTINGS["screenClipHotkey"])),
+            overlay_opacity_percent=self.overlay_opacity_slider.value(),
+            overlay_duration_seconds=self.overlay_duration_seconds.value(),
             page_load_delay_ms=self.page_load_delay_ms.value(),
             page_ready_timeout_ms=self.page_ready_timeout_ms.value(),
             before_submit_delay_ms=self.before_submit_delay_ms.value(),

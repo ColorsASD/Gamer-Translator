@@ -29,6 +29,8 @@ DEFAULT_SETTINGS = {
     "typeOutHotkey": "Alt+V",
     "screenClipHotkeyEnabled": True,
     "screenClipHotkey": "Alt+C",
+    "overlayOpacityPercent": 50,
+    "overlayDurationSeconds": 30,
     "pageLoadDelayMs": 0,
     "pageReadyTimeoutMs": 25000,
     "beforeSubmitDelayMs": 0,
