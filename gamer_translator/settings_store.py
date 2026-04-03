@@ -7,7 +7,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .defaults import DEFAULT_BIDIRECTIONAL_PROMPT, DEFAULT_SETTINGS, LEGACY_BIDIRECTIONAL_PROMPT, PREVIOUS_BIDIRECTIONAL_PROMPT
+from .defaults import (
+    DEFAULT_BIDIRECTIONAL_PROMPT,
+    DEFAULT_SETTINGS,
+    IMAGE_ONLY_BIDIRECTIONAL_PROMPT,
+    LEGACY_BIDIRECTIONAL_PROMPT,
+    PREVIOUS_BIDIRECTIONAL_PROMPT,
+    PREVIOUS_OCR_RECONSTRUCTION_PROMPT,
+    PREVIOUS_TEXT_AND_IMAGE_BIDIRECTIONAL_PROMPT,
+)
 
 
 def default_app_data_dir() -> Path:
@@ -31,6 +39,8 @@ class AppSettings:
     prompt_template: str = str(DEFAULT_SETTINGS["promptTemplate"])
     auto_submit: bool = bool(DEFAULT_SETTINGS["autoSubmit"])
     copy_response_to_clipboard: bool = bool(DEFAULT_SETTINGS["copyResponseToClipboard"])
+    ocr_text_from_clipboard_image: bool = bool(DEFAULT_SETTINGS["ocrTextFromClipboardImage"])
+    webview_gpu_acceleration_enabled: bool = bool(DEFAULT_SETTINGS["webViewGpuAccelerationEnabled"])
     type_out_hotkey_enabled: bool = bool(DEFAULT_SETTINGS["typeOutHotkeyEnabled"])
     type_out_hotkey: str = str(DEFAULT_SETTINGS["typeOutHotkey"])
     screen_clip_hotkey_enabled: bool = bool(DEFAULT_SETTINGS["screenClipHotkeyEnabled"])
@@ -58,7 +68,13 @@ class AppSettings:
         if screen_clip_hotkey == "F5":
             screen_clip_hotkey = str(DEFAULT_SETTINGS["screenClipHotkey"])
 
-        if prompt_template in {LEGACY_BIDIRECTIONAL_PROMPT, PREVIOUS_BIDIRECTIONAL_PROMPT}:
+        if prompt_template in {
+            LEGACY_BIDIRECTIONAL_PROMPT,
+            PREVIOUS_BIDIRECTIONAL_PROMPT,
+            IMAGE_ONLY_BIDIRECTIONAL_PROMPT,
+            PREVIOUS_TEXT_AND_IMAGE_BIDIRECTIONAL_PROMPT,
+            PREVIOUS_OCR_RECONSTRUCTION_PROMPT,
+        }:
             prompt_template = DEFAULT_BIDIRECTIONAL_PROMPT
 
         return cls(
@@ -68,6 +84,8 @@ class AppSettings:
             prompt_template=prompt_template,
             auto_submit=True,
             copy_response_to_clipboard=bool(raw.get("copyResponseToClipboard", DEFAULT_SETTINGS["copyResponseToClipboard"])),
+            ocr_text_from_clipboard_image=bool(raw.get("ocrTextFromClipboardImage", DEFAULT_SETTINGS["ocrTextFromClipboardImage"])),
+            webview_gpu_acceleration_enabled=bool(raw.get("webViewGpuAccelerationEnabled", DEFAULT_SETTINGS["webViewGpuAccelerationEnabled"])),
             type_out_hotkey_enabled=bool(raw.get("typeOutHotkeyEnabled", DEFAULT_SETTINGS["typeOutHotkeyEnabled"])),
             type_out_hotkey=type_out_hotkey,
             screen_clip_hotkey_enabled=bool(raw.get("screenClipHotkeyEnabled", DEFAULT_SETTINGS["screenClipHotkeyEnabled"])),
@@ -89,6 +107,8 @@ class AppSettings:
             "promptTemplate": raw["prompt_template"],
             "autoSubmit": True,
             "copyResponseToClipboard": raw["copy_response_to_clipboard"],
+            "ocrTextFromClipboardImage": raw["ocr_text_from_clipboard_image"],
+            "webViewGpuAccelerationEnabled": raw["webview_gpu_acceleration_enabled"],
             "typeOutHotkeyEnabled": raw["type_out_hotkey_enabled"],
             "typeOutHotkey": raw["type_out_hotkey"],
             "screenClipHotkeyEnabled": raw["screen_clip_hotkey_enabled"],

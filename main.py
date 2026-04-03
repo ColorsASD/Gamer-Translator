@@ -1,12 +1,43 @@
 from __future__ import annotations
 
+import os
 import sys
+
+from gamer_translator.defaults import APP_NAME
+from gamer_translator.settings_store import SettingsStore
+
+
+def configure_webengine_environment() -> None:
+    if sys.platform != "win32":
+        return
+
+    settings = SettingsStore().load_settings()
+    disabled_flags = {
+        "--disable-gpu",
+        "--disable-gpu-compositing",
+    }
+    existing_flags = [
+        flag
+        for flag in os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").split()
+        if flag not in disabled_flags
+    ]
+
+    if not settings.webview_gpu_acceleration_enabled:
+        existing_flags.extend(sorted(disabled_flags))
+
+    if existing_flags:
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(existing_flags)
+        return
+
+    os.environ.pop("QTWEBENGINE_CHROMIUM_FLAGS", None)
+
+
+configure_webengine_environment()
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
-from gamer_translator.defaults import APP_NAME
 from gamer_translator.main_window import MainWindow
 
 

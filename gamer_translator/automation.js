@@ -25,11 +25,20 @@
       if (payload.prompt) {
         activeComposer = await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "frissített beviteli mező");
         writePrompt(activeComposer, payload.prompt);
+        activeComposer = await waitForPromptApplied(
+          activeComposer,
+          payload.prompt,
+          Math.min(payload.pageReadyTimeoutMs, 1800)
+        );
         await maybeDelayLocal(payload.beforeSubmitDelayMs);
       }
 
       if (payload.autoSubmit) {
-        await submitMessage(activeComposer);
+        if (payload.imageDataUrl && !payload.prompt) {
+          await submitImageMessage(activeComposer);
+        } else {
+          await submitTextMessage(activeComposer);
+        }
       }
 
       let assistantResponseText = "";
@@ -142,60 +151,132 @@
       }
     }
 
-    async function submitMessage(composer) {
-      const liveComposer = findComposer() || composer;
-      const sendButton = await waitFor(() => findSendButton(liveComposer), 15000, "küldés gomb");
+    async function submitTextMessage(composer) {
+      const liveComposer = await waitFor(() => findComposer() || composer, 15000, "beviteli mező");
+      const preparedComposer = await waitFor(() => {
+        const candidate = findComposer() || liveComposer;
+        return isComposerReadyForSubmit(candidate) ? candidate : null;
+      }, 12000, "beküldhető tartalom");
+      const beforeState = captureComposerSubmitState(preparedComposer);
+      const sendButton = findSendButton(preparedComposer);
+      const form = findClosestForm(preparedComposer);
+      const expandedEditorMode = isExpandedComposerEditor(preparedComposer);
+      const attempts = [];
 
-      if (!(sendButton instanceof HTMLButtonElement)) {
-        throw new Error("A küldés gomb nem található.");
+      if (sendButton instanceof HTMLButtonElement) {
+        attempts.push({
+          timeoutMs: 850,
+          run() {
+            fireClickSequence(sendButton);
+          }
+        });
       }
 
-      const beforeState = readButtonState(sendButton);
+      if (form instanceof HTMLFormElement) {
+        attempts.push({
+          timeoutMs: 700,
+          run() {
+            if (typeof form.requestSubmit === "function") {
+              form.requestSubmit();
+              return;
+            }
 
-      fireClickSequence(sendButton);
-
-      if (await waitForSendTransition(beforeState, 2000)) {
-        return;
+            dispatchFormSubmit(form);
+          }
+        });
+        attempts.push({
+          timeoutMs: 650,
+          run() {
+            dispatchFormSubmit(form);
+          }
+        });
       }
 
-      const form = liveComposer?.closest("form");
+      if (!expandedEditorMode) {
+        attempts.push({
+          timeoutMs: 650,
+          run() {
+            preparedComposer.focus();
+            dispatchEnterSequence(preparedComposer);
+          }
+        });
+      }
 
-      if (form && typeof form.requestSubmit === "function") {
-        form.requestSubmit();
+      for (const attempt of attempts) {
+        attempt.run();
 
-        if (await waitForSendTransition(beforeState, 1200)) {
+        if (await waitForSendTransition(beforeState, attempt.timeoutMs)) {
           return;
         }
       }
 
-      if (liveComposer) {
-        liveComposer.focus();
-        dispatchEnterSequence(liveComposer);
+      throw new Error("A tartalom bekerült, de a beküldést nem tudtam elindítani.");
+    }
 
-        if (await waitForSendTransition(beforeState, 1200)) {
+    async function submitImageMessage(composer) {
+      const liveComposer = await waitFor(() => findComposer() || composer, 15000, "beviteli mező");
+      const preparedComposer = await waitFor(() => {
+        const candidate = findComposer() || liveComposer;
+        return isImageReadyForSubmit(candidate) ? candidate : null;
+      }, 12000, "feltöltött kép");
+      const beforeState = captureComposerSubmitState(preparedComposer);
+      const form = findClosestForm(preparedComposer);
+      const attempts = [];
+
+      attempts.push({
+        timeoutMs: 1500,
+        run() {
+          const liveSendButton = findSendButton(preparedComposer);
+
+          if (!(liveSendButton instanceof HTMLButtonElement)) {
+            throw new Error("A képküldés gomb nem található.");
+          }
+
+          fireClickSequence(liveSendButton);
+        }
+      });
+
+      if (form instanceof HTMLFormElement) {
+        attempts.push({
+          timeoutMs: 900,
+          run() {
+            if (typeof form.requestSubmit === "function") {
+              form.requestSubmit();
+              return;
+            }
+
+            dispatchFormSubmit(form);
+          }
+        });
+        attempts.push({
+          timeoutMs: 850,
+          run() {
+            dispatchFormSubmit(form);
+          }
+        });
+      }
+
+      for (const attempt of attempts) {
+        attempt.run();
+
+        if (await waitForImageSendTransition(beforeState, preparedComposer, attempt.timeoutMs)) {
           return;
         }
       }
 
-      throw new Error("A kép bekerült, de a beküldést nem tudtam elindítani.");
+      throw new Error("A kép csatolva maradt, de a beküldést nem tudtam elindítani.");
     }
 
     function writePrompt(element, prompt) {
       element.focus();
+      const hasMultilinePrompt = String(prompt || "").includes("\n");
 
       if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
         const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
         const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
 
         descriptor?.set?.call(element, prompt);
-        element.dispatchEvent(
-          new InputEvent("input", {
-            bubbles: true,
-            composed: true,
-            data: prompt,
-            inputType: "insertText"
-          })
-        );
+        dispatchComposerInput(element, prompt, hasMultilinePrompt);
         element.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
         return;
       }
@@ -210,58 +291,233 @@
 
         let inserted = false;
 
-        try {
-          inserted = document.execCommand("insertText", false, prompt);
-        } catch (_error) {
-          inserted = false;
+        if (!hasMultilinePrompt) {
+          try {
+            inserted = document.execCommand("insertText", false, prompt);
+          } catch (_error) {
+            inserted = false;
+          }
         }
 
-        if (!inserted || normalizeWhitespace(element.textContent) !== normalizeWhitespace(prompt)) {
-          element.textContent = prompt;
+        if (!inserted || normalizePromptStructure(readComposerText(element)) !== normalizePromptStructure(prompt)) {
+          setContentEditablePrompt(element, prompt);
         }
 
-        element.dispatchEvent(
-          new InputEvent("input", {
-            bubbles: true,
-            composed: true,
-            data: prompt,
-            inputType: "insertText"
-          })
-        );
+        dispatchComposerInput(element, prompt, hasMultilinePrompt);
+        element.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
         return;
       }
 
       throw new Error("A talált beviteli mező típusa nem támogatott.");
     }
 
+    function readComposerText(element) {
+      if (!(element instanceof HTMLElement)) {
+        return "";
+      }
+
+      if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+        return String(element.value || "");
+      }
+
+      return String(element.innerText || element.textContent || "");
+    }
+
+    async function waitForPromptApplied(composer, prompt, timeoutMs) {
+      const expectedPrompt = normalizePromptStructure(prompt);
+
+      if (!expectedPrompt) {
+        return findComposer() || composer;
+      }
+
+      const startedAt = Date.now();
+
+      while (Date.now() - startedAt < timeoutMs) {
+        const liveComposer = findComposer() || composer;
+        const currentPrompt = normalizePromptStructure(readComposerText(liveComposer));
+
+        if (
+          currentPrompt
+          && (
+            currentPrompt === expectedPrompt
+            || currentPrompt.includes(expectedPrompt)
+            || expectedPrompt.includes(currentPrompt)
+          )
+        ) {
+          return liveComposer;
+        }
+
+        await wait(80);
+      }
+
+      return findComposer() || composer;
+    }
+
+    function setContentEditablePrompt(element, prompt) {
+      const normalizedPrompt = String(prompt || "").replace(/\r\n?/g, "\n");
+      const lines = normalizedPrompt.split("\n");
+      const fragment = document.createDocumentFragment();
+
+      lines.forEach((line) => {
+        const paragraph = document.createElement("p");
+
+        if (line) {
+          paragraph.appendChild(document.createTextNode(line));
+        } else {
+          paragraph.appendChild(document.createElement("br"));
+        }
+
+        fragment.appendChild(paragraph);
+      });
+
+      if (lines.length === 0) {
+        const paragraph = document.createElement("p");
+        paragraph.appendChild(document.createElement("br"));
+        fragment.appendChild(paragraph);
+      }
+
+      element.replaceChildren(fragment);
+
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.collapse(false);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+
+    function dispatchComposerInput(element, prompt, hasMultilinePrompt) {
+      const inputType = hasMultilinePrompt ? "insertFromPaste" : "insertText";
+      const data = hasMultilinePrompt ? null : prompt;
+
+      try {
+        element.dispatchEvent(
+          new InputEvent("beforeinput", {
+            bubbles: true,
+            composed: true,
+            data,
+            inputType
+          })
+        );
+      } catch (_error) {
+        // A beforeinput itt csak kompatibilitási fallback, hiba esetén megyünk tovább.
+      }
+
+      try {
+        element.dispatchEvent(
+          new InputEvent("input", {
+            bubbles: true,
+            composed: true,
+            data,
+            inputType
+          })
+        );
+        return;
+      } catch (_error) {
+        element.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      }
+    }
+
     function findComposer() {
-      const selectors = [
-        "#prompt-textarea",
-        '[data-testid="prompt-textarea"]',
-        "textarea",
-        '[contenteditable="true"]',
-        '[role="textbox"]'
+      const selectorWeights = [
+        ["#prompt-textarea", 5000],
+        ['[data-testid="prompt-textarea"]', 4800],
+        ["textarea", 3200],
+        ['[role="textbox"]', 2500],
+        ['[contenteditable="true"]', 1800]
       ];
-      const candidates = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
+      const candidateWeights = new Map();
 
-      return candidates.find((element) => {
-        if (!(element instanceof HTMLElement) || !isVisible(element)) {
-          return false;
+      for (const [selector, weight] of selectorWeights) {
+        for (const element of document.querySelectorAll(selector)) {
+          const previousWeight = candidateWeights.get(element) || 0;
+
+          if (weight > previousWeight) {
+            candidateWeights.set(element, weight);
+          }
         }
+      }
 
-        if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
-          return !element.disabled && !element.readOnly;
-        }
+      const candidates = Array.from(candidateWeights.entries())
+        .map(([element, weight]) => ({ element, weight }))
+        .filter(({ element }) => isComposerElement(element))
+        .sort((left, right) => scoreComposerCandidate(right.element, right.weight) - scoreComposerCandidate(left.element, left.weight));
 
-        return element.isContentEditable;
-      }) || null;
+      return candidates[0]?.element || null;
+    }
+
+    function isComposerElement(element) {
+      if (!(element instanceof HTMLElement) || !isVisible(element)) {
+        return false;
+      }
+
+      if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+        return !element.disabled && !element.readOnly;
+      }
+
+      return element.isContentEditable;
+    }
+
+    function scoreComposerCandidate(element, selectorWeight) {
+      if (!(element instanceof HTMLElement)) {
+        return Number.NEGATIVE_INFINITY;
+      }
+
+      const rect = element.getBoundingClientRect();
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+      const scope = findComposerScope(element);
+      const activeElementBonus = document.activeElement === element ? 240 : 0;
+      const promptSelectorBonus = element.id === "prompt-textarea" || element.getAttribute("data-testid") === "prompt-textarea" ? 1600 : 0;
+      const lowerViewportBonus = rect.bottom >= viewportHeight * 0.55 ? 1400 : 0;
+      const lowestPositionBonus = Math.max(0, rect.bottom);
+      const scopeSendButtonBonus = scopeHasLikelyComposerActions(scope) ? 900 : 0;
+      const conversationPenalty = element.closest('[data-testid^="conversation-turn-"], article') ? 3200 : 0;
+      const topHalfPenalty = rect.bottom < viewportHeight * 0.45 ? 1800 : 0;
+
+      return selectorWeight
+        + activeElementBonus
+        + promptSelectorBonus
+        + lowerViewportBonus
+        + lowestPositionBonus
+        + scopeSendButtonBonus
+        - conversationPenalty
+        - topHalfPenalty;
+    }
+
+    function scopeHasLikelyComposerActions(scope) {
+      if (!(scope instanceof Element)) {
+        return false;
+      }
+
+      return Boolean(
+        scope.querySelector('button[data-testid="send-button"]')
+        || scope.querySelector('button[data-testid*="send"]')
+        || scope.querySelector('button[aria-label*="send" i]')
+        || scope.querySelector('button[aria-label*="küld" i]')
+        || scope.querySelector('button[title*="send" i]')
+        || scope.querySelector('button[title*="küld" i]')
+        || scope.querySelector('button[type="submit"]')
+      );
     }
 
     function captureComposerAttachmentSnapshot(composer) {
       const scope = findComposerScope(composer);
-      const sendButton = findSendButton(composer);
+      const sendButton = findSendButton(composer, { allowDisabled: true });
 
       return {
+        attachmentCount: countAttachmentIndicators(scope),
+        fileInputCount: countSelectedFiles(scope),
+        sendButtonState: sendButton ? readButtonState(sendButton) : null
+      };
+    }
+
+    function captureComposerSubmitState(composer) {
+      const liveComposer = findComposer() || composer;
+      const scope = findComposerScope(liveComposer);
+      const sendButton = findSendButton(liveComposer, { allowDisabled: true });
+
+      return {
+        composerText: normalizePromptStructure(readComposerText(liveComposer)),
         attachmentCount: countAttachmentIndicators(scope),
         fileInputCount: countSelectedFiles(scope),
         sendButtonState: sendButton ? readButtonState(sendButton) : null
@@ -276,23 +532,25 @@
         const scope = findComposerScope(liveComposer);
         const attachmentCount = countAttachmentIndicators(scope);
         const fileInputCount = countSelectedFiles(scope);
-        const sendButton = findSendButton(liveComposer);
+        const sendButton = findSendButton(liveComposer, { allowDisabled: true });
         const sendButtonState = sendButton ? readButtonState(sendButton) : null;
+        const attachmentAccepted = attachmentCount > beforeSnapshot.attachmentCount || fileInputCount > beforeSnapshot.fileInputCount;
+        const uploadPending = hasPendingAttachmentWork(scope);
 
-        if (attachmentCount > beforeSnapshot.attachmentCount || fileInputCount > beforeSnapshot.fileInputCount) {
+        if (attachmentAccepted && !uploadPending) {
           return liveComposer;
         }
 
         if (
           sendButtonState
-          && !sendButtonState.disabled
           && (
             !beforeSnapshot.sendButtonState
-            || beforeSnapshot.sendButtonState.disabled
             || !sameButtonState(beforeSnapshot.sendButtonState, sendButtonState)
           )
         ) {
-          return liveComposer;
+          if (!sendButtonState.disabled || !uploadPending) {
+            return liveComposer;
+          }
         }
 
         await wait(80);
@@ -301,11 +559,44 @@
       return findComposer() || composer;
     }
 
+    function isImageReadyForSubmit(composer) {
+      if (!(composer instanceof HTMLElement)) {
+        return false;
+      }
+
+      const scope = findComposerScope(composer);
+      const hasAttachment = countAttachmentIndicators(scope) > 0 || countSelectedFiles(scope) > 0;
+      const sendButton = findSendButton(composer, { allowDisabled: true });
+
+      if (!hasAttachment || hasPendingAttachmentWork(scope)) {
+        return false;
+      }
+
+      return sendButton instanceof HTMLButtonElement && !sendButton.disabled;
+    }
+
     function findComposerScope(composer) {
-      return composer?.closest("form")
+      return findClosestForm(composer)
         || findComposerContainer(composer)
         || composer?.parentElement
         || null;
+    }
+
+    function findClosestForm(composer) {
+      if (!(composer instanceof Element)) {
+        return null;
+      }
+
+      const directForm = composer.closest("form");
+
+      if (directForm instanceof HTMLFormElement) {
+        return directForm;
+      }
+
+      const container = findComposerContainer(composer) || composer.parentElement;
+      const nestedForm = container?.querySelector("form");
+
+      return nestedForm instanceof HTMLFormElement ? nestedForm : null;
     }
 
     function findComposerContainer(composer) {
@@ -316,7 +607,7 @@
       let current = composer.parentElement;
       let depth = 0;
 
-      while (current && depth < 8) {
+      while (current && depth < 12) {
         if (
           current.querySelector('button[data-testid="send-button"]')
           || current.querySelector('button[data-testid*="send"]')
@@ -367,8 +658,44 @@
         .reduce((count, input) => count + ((input instanceof HTMLInputElement && input.files?.length) ? input.files.length : 0), 0);
     }
 
-    function findSendButton(composer) {
+    function hasPendingAttachmentWork(scope) {
+      if (!(scope instanceof Element)) {
+        return false;
+      }
+
+      const pendingSelectors = [
+        '[aria-busy="true"]',
+        '[role="progressbar"]',
+        '[data-state="uploading"]',
+        '[data-status="uploading"]',
+        '[data-testid*="upload" i]',
+        '[class*="uploading"]',
+        '[class*="progress"]'
+      ];
+
+      const pendingNodes = pendingSelectors
+        .flatMap((selector) => Array.from(scope.querySelectorAll(selector)))
+        .filter((element) => element instanceof Element && isVisible(element));
+
+      if (pendingNodes.length > 0) {
+        return true;
+      }
+
+      const attachmentCount = countAttachmentIndicators(scope);
+      const fileInputCount = countSelectedFiles(scope);
+
+      if (attachmentCount === 0 && fileInputCount === 0) {
+        return false;
+      }
+
+      const sendButton = findSendButton(findComposer(), { allowDisabled: true });
+      return sendButton instanceof HTMLButtonElement && sendButton.disabled;
+    }
+
+    function findSendButton(composer, options = {}) {
+      const allowDisabled = Boolean(options.allowDisabled);
       const scope = findComposerScope(composer);
+      const form = findClosestForm(composer);
       const specificSelectors = [
         'button[data-testid="send-button"]',
         'button[data-testid*="send"]',
@@ -379,8 +706,20 @@
         'form button[type="submit"]'
       ];
 
+      const explicitFormMatch = findExplicitSendButton(form, composer, allowDisabled);
+
+      if (explicitFormMatch) {
+        return explicitFormMatch;
+      }
+
+      const explicitScopedMatch = findExplicitSendButton(scope, composer, allowDisabled);
+
+      if (explicitScopedMatch) {
+        return explicitScopedMatch;
+      }
+
       for (const selector of specificSelectors) {
-        const scopedMatch = findBestSendButtonMatch(scope, selector, composer);
+        const scopedMatch = findBestSendButtonMatch(scope, selector, composer, allowDisabled);
 
         if (scopedMatch) {
           return scopedMatch;
@@ -390,13 +729,22 @@
       if (scope instanceof Element) {
         const scopedButtons = Array.from(scope.querySelectorAll("button"))
           .filter((button) => button instanceof HTMLButtonElement)
-          .filter((button) => isEligibleSendButton(button) && looksLikeSendButton(button) && isNearComposer(button, composer));
+          .filter((button) => isEligibleSendButton(button, { allowDisabled }) && looksLikeSendButton(button) && isNearComposer(button, composer));
 
         const nearestScopedButton = pickNearestButton(scopedButtons, composer);
 
         if (nearestScopedButton) {
           return nearestScopedButton;
         }
+      }
+
+      const documentButtons = Array.from(document.querySelectorAll("button"))
+        .filter((button) => button instanceof HTMLButtonElement)
+        .filter((button) => isEligibleSendButton(button, { allowDisabled }) && looksLikeSendButton(button) && isNearComposer(button, composer));
+      const nearestDocumentButton = pickNearestButton(documentButtons, composer);
+
+      if (nearestDocumentButton) {
+        return nearestDocumentButton;
       }
 
       return null;
@@ -417,6 +765,7 @@
     async function waitForAssistantResponse(previousSnapshot, timeoutMs) {
       const startedAt = Date.now();
       let lastCandidate = "";
+      let latestUsableCandidate = "";
       let stableSince = 0;
 
       while (Date.now() - startedAt < timeoutMs) {
@@ -434,6 +783,8 @@
             await wait(120);
             continue;
           }
+
+          latestUsableCandidate = candidate;
 
           if (candidate !== lastCandidate) {
             lastCandidate = candidate;
@@ -455,7 +806,27 @@
           }
         }
 
-        await wait(120);
+        await wait(80);
+      }
+
+      const finalSnapshot = captureAssistantSnapshot();
+      const finalCandidate = finalSnapshot.lastText;
+      const hasFinalResponse = Boolean(finalCandidate)
+        && (finalSnapshot.count > previousSnapshot.count || finalCandidate !== previousSnapshot.lastText)
+        && !isTransientAssistantText(finalCandidate);
+
+      if (hasFinalResponse) {
+        return {
+          text: finalCandidate,
+          copied: false
+        };
+      }
+
+      if (latestUsableCandidate) {
+        return {
+          text: latestUsableCandidate,
+          copied: false
+        };
       }
 
       throw new Error("A ChatGPT válasza nem érkezett meg időben.");
@@ -591,8 +962,10 @@
       return "";
     }
 
-    function isEligibleSendButton(button) {
-      if (!(button instanceof HTMLButtonElement) || !isVisible(button) || button.disabled) {
+    function isEligibleSendButton(button, options = {}) {
+      const allowDisabled = Boolean(options.allowDisabled);
+
+      if (!(button instanceof HTMLButtonElement) || !isVisible(button) || (button.disabled && !allowDisabled)) {
         return false;
       }
 
@@ -603,14 +976,33 @@
       return true;
     }
 
-    function findBestSendButtonMatch(scope, selector, composer) {
+    function findExplicitSendButton(scope, composer, allowDisabled = false) {
+      if (!(scope instanceof Element)) {
+        return null;
+      }
+
+      const matches = Array.from(scope.querySelectorAll("button"))
+        .filter((button) => button instanceof HTMLButtonElement)
+        .filter((button) => isEligibleSendButton(button, { allowDisabled }))
+        .filter((button) => buttonHasExplicitSendIntent(button));
+
+      return pickNearestButton(matches, composer);
+    }
+
+    function findBestSendButtonMatch(scope, selector, composer, allowDisabled = false) {
       if (!(scope instanceof Element)) {
         return null;
       }
 
       const matches = Array.from(scope.querySelectorAll(selector))
         .filter((button) => button instanceof HTMLButtonElement)
-        .filter((button) => isEligibleSendButton(button) && looksLikeSendButton(button) && isNearComposer(button, composer));
+        .filter((button) => {
+          if (!isEligibleSendButton(button, { allowDisabled }) || !looksLikeSendButton(button)) {
+            return false;
+          }
+
+          return buttonHasExplicitSendIntent(button) || isNearComposer(button, composer);
+        });
 
       return pickNearestButton(matches, composer);
     }
@@ -622,9 +1014,23 @@
 
       const label = readButtonLabel(button);
 
+      if (buttonHasExplicitSendIntent(button)) {
+        return true;
+      }
+
       if (button.type === "submit" && !looksLikeNonSendAction(label)) {
         return true;
       }
+
+      return false;
+    }
+
+    function buttonHasExplicitSendIntent(button) {
+      if (!(button instanceof HTMLButtonElement)) {
+        return false;
+      }
+
+      const label = readButtonLabel(button);
 
       return ["send", "küld", "elküld", "submit", "prompt"].some((needle) => label.includes(needle))
         && !looksLikeNonSendAction(label);
@@ -632,6 +1038,15 @@
 
     function looksLikeNonSendAction(label) {
       return ["stop", "állj", "megszakít", "cancel", "copy", "másol", "like", "dislike", "share", "regenerate", "more", "megoszt", "átnevez", "rögzít", "archiv", "törlés", "delete"].some((needle) => label.includes(needle));
+    }
+
+    function looksLikeCancelAction(button) {
+      if (!(button instanceof HTMLButtonElement)) {
+        return false;
+      }
+
+      const label = readButtonLabel(button);
+      return ["cancel", "mégse", "vetés", "elvet", "discard"].some((needle) => label.includes(needle));
     }
 
     function readButtonLabel(button) {
@@ -661,9 +1076,10 @@
           const rect = button.getBoundingClientRect();
           const horizontalDistance = Math.abs(rect.left - composerRect.right);
           const verticalDistance = Math.abs((rect.top + rect.height / 2) - (composerRect.top + composerRect.height / 2));
+          const explicitSendBonus = buttonHasExplicitSendIntent(button) ? -2000 : 0;
           const sameFormBonus = composer.closest("form") && composer.closest("form") === button.closest("form") ? -500 : 0;
           const afterComposerBonus = rect.left >= composerRect.left ? -100 : 0;
-          const score = horizontalDistance + verticalDistance + sameFormBonus + afterComposerBonus;
+          const score = horizontalDistance + verticalDistance + explicitSendBonus + sameFormBonus + afterComposerBonus;
 
           return { button, score };
         })
@@ -715,7 +1131,7 @@
           return value;
         }
 
-        await wait(250);
+        await wait(120);
       }
 
       throw new Error(`Nem található: ${label}.`);
@@ -738,32 +1154,94 @@
       return String(value || "").replace(/\s+/g, " ").trim();
     }
 
+    function normalizePromptStructure(value) {
+      return String(value || "")
+        .replace(/\r\n?/g, "\n")
+        .split("\n")
+        .map((line) => line.replace(/[ \t]+/g, " ").trimEnd())
+        .join("\n")
+        .trim();
+    }
+
     async function waitForSendTransition(beforeState, timeoutMs) {
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < timeoutMs) {
         const composer = findComposer();
-        const sendButton = findSendButton(composer);
+        const afterState = captureComposerSubmitState(composer);
+        const beforeButtonState = beforeState.sendButtonState;
+        const afterButtonState = afterState.sendButtonState;
 
-        if (!sendButton) {
+        if (beforeButtonState && !afterButtonState) {
           return true;
         }
 
-        const afterState = readButtonState(sendButton);
+        if (afterButtonState && beforeButtonState) {
+          if (afterButtonState.disabled && !beforeButtonState.disabled) {
+            return true;
+          }
 
-        if (afterState.disabled && !beforeState.disabled) {
+          if (buttonLooksLikeStop(afterButtonState) && !buttonLooksLikeStop(beforeButtonState)) {
+            return true;
+          }
+
+          if (!sameButtonState(beforeButtonState, afterButtonState)) {
+            return true;
+          }
+        }
+
+        if (
+          beforeState.composerText
+          && normalizePromptStructure(afterState.composerText) !== normalizePromptStructure(beforeState.composerText)
+        ) {
           return true;
         }
 
-        if (buttonLooksLikeStop(afterState) && !buttonLooksLikeStop(beforeState)) {
+        if (afterState.attachmentCount < beforeState.attachmentCount || afterState.fileInputCount < beforeState.fileInputCount) {
           return true;
         }
 
-        if (!sameButtonState(beforeState, afterState)) {
+        if (isGenerationInProgress()) {
           return true;
         }
 
-        await wait(100);
+        await wait(45);
+      }
+
+      return false;
+    }
+
+    async function waitForImageSendTransition(beforeState, composer, timeoutMs) {
+      const startedAt = Date.now();
+
+      while (Date.now() - startedAt < timeoutMs) {
+        const liveComposer = findComposer() || composer;
+        const scope = findComposerScope(liveComposer);
+        const afterState = captureComposerSubmitState(liveComposer);
+
+        if (beforeState.attachmentCount > 0 && afterState.attachmentCount < beforeState.attachmentCount) {
+          return true;
+        }
+
+        if (beforeState.fileInputCount > 0 && afterState.fileInputCount < beforeState.fileInputCount) {
+          return true;
+        }
+
+        if (beforeState.sendButtonState && afterState.sendButtonState) {
+          if (buttonLooksLikeStop(afterState.sendButtonState) && !buttonLooksLikeStop(beforeState.sendButtonState)) {
+            return true;
+          }
+
+          if (!sameButtonState(beforeState.sendButtonState, afterState.sendButtonState) && !hasPendingAttachmentWork(scope)) {
+            return true;
+          }
+        }
+
+        if (isGenerationInProgress()) {
+          return true;
+        }
+
+        await wait(60);
       }
 
       return false;
@@ -794,6 +1272,14 @@
       element.click();
     }
 
+    function dispatchFormSubmit(form) {
+      try {
+        form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      } catch (_error) {
+        // Ha a submit event nem megy át, jön a következő fallback.
+      }
+    }
+
     function dispatchEnterSequence(element) {
       const events = [
         new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", code: "Enter", keyCode: 13, which: 13 }),
@@ -804,6 +1290,39 @@
       for (const event of events) {
         element.dispatchEvent(event);
       }
+    }
+
+    function isComposerReadyForSubmit(composer) {
+      if (!(composer instanceof HTMLElement)) {
+        return false;
+      }
+
+      const scope = findComposerScope(composer);
+      const hasPrompt = Boolean(normalizePromptStructure(readComposerText(composer)));
+      const hasAttachment = countAttachmentIndicators(scope) > 0 || countSelectedFiles(scope) > 0;
+
+      return hasPrompt || hasAttachment;
+    }
+
+    function isExpandedComposerEditor(composer) {
+      if (!(composer instanceof HTMLElement)) {
+        return false;
+      }
+
+      const scope = findComposerScope(composer);
+
+      if (!(scope instanceof Element)) {
+        return false;
+      }
+
+      const visibleButtons = Array.from(scope.querySelectorAll("button"))
+        .filter((button) => button instanceof HTMLButtonElement)
+        .filter((button) => isVisible(button));
+
+      const hasCancel = visibleButtons.some((button) => looksLikeCancelAction(button));
+      const hasExplicitSend = visibleButtons.some((button) => buttonHasExplicitSendIntent(button));
+
+      return hasCancel && hasExplicitSend;
     }
   };
 })();

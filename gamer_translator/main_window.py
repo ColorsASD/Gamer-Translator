@@ -5,12 +5,15 @@ import ctypes
 import hashlib
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import winsound
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from PySide6.QtCore import QBuffer, QEasingCurve, QEvent, QEventLoop, QIODevice, QPoint, Property, QPropertyAnimation, QTimer, Qt, QUrl, Signal
@@ -43,7 +46,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from .defaults import APP_NAME, CHATGPT_HOSTS, CHATGPT_URL, DEFAULT_SETTINGS, WINDOW_TITLE
+from .defaults import APP_NAME, CHATGPT_HOSTS, CHATGPT_URL, DEFAULT_RESPONSE_TIMEOUT_MS, DEFAULT_SETTINGS, WINDOW_TITLE
+from .ocr_service import OCRService
 from .settings_store import AppSettings, LastRunStatus, SettingsStore
 
 if sys.platform == "win32":
@@ -72,6 +76,7 @@ if sys.platform == "win32":
     WM_KEYUP = 0x0101
     WM_SYSKEYDOWN = 0x0104
     WM_SYSKEYUP = 0x0105
+    LLKHF_INJECTED = 0x10
     VK_CONTROL = 0x11
     VK_MENU = 0x12
     VK_SHIFT = 0x10
@@ -79,6 +84,8 @@ if sys.platform == "win32":
     VK_RWIN = 0x5C
     VK_RETURN = 0x0D
     VK_TAB = 0x09
+    THREAD_PRIORITY_ERROR_RETURN = 0x7FFFFFFF
+    THREAD_PRIORITY_LOWEST = -2
     DWMWA_USE_IMMERSIVE_DARK_MODE = 20
     DWMWA_WINDOW_CORNER_PREFERENCE = 33
     DWMWCP_ROUND = 2
@@ -190,8 +197,14 @@ if sys.platform == "win32":
     user32.SetWindowPos.restype = wintypes.BOOL
     dwmapi.DwmSetWindowAttribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
     dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
+    kernel32.GetCurrentThread.argtypes = ()
+    kernel32.GetCurrentThread.restype = wintypes.HANDLE
+    kernel32.GetThreadPriority.argtypes = (wintypes.HANDLE,)
+    kernel32.GetThreadPriority.restype = ctypes.c_int
     kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
     kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+    kernel32.SetThreadPriority.argtypes = (wintypes.HANDLE, ctypes.c_int)
+    kernel32.SetThreadPriority.restype = wintypes.BOOL
 
 
 def resource_path(relative_path: str) -> Path:
@@ -581,6 +594,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1080, 720)
 
         self.store = SettingsStore()
+        self.ocr_service = OCRService()
+        self.background_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gamer_translator")
         self.settings = self.store.load_settings()
         self.last_run_status = self.store.load_last_run_status()
         self.automation_script = resource_path("gamer_translator/automation.js").read_text(encoding="utf-8")
@@ -594,6 +609,7 @@ class MainWindow(QMainWindow):
         self.registered_hotkeys: dict[str, tuple[int, int]] = {}
         self.hotkey_errors: dict[str, str] = {}
         self.hotkey_pressed_states: dict[str, bool] = {}
+        self.registered_hotkey_primary_keys: set[int] = set()
         self.keyboard_hook_handle = None
         self.keyboard_hook_callback = None
         self.native_window_theme_applied = False
@@ -601,6 +617,7 @@ class MainWindow(QMainWindow):
         self.window_was_maximized_before_hide = False
         self.tray_message_shown = False
         self.browser_background_mode = False
+        self.browser_interaction_active = False
         self.tray_icon: QSystemTrayIcon | None = None
         self.tray_toggle_action: QAction | None = None
         self.browser_background_host = BrowserBackgroundHost()
@@ -627,7 +644,11 @@ class MainWindow(QMainWindow):
         self._apply_window_icon()
         self._build_tray_icon()
         self._sync_window_buttons()
-        self._install_keyboard_hook()
+        app = QApplication.instance()
+
+        if app is not None:
+            app.applicationStateChanged.connect(self._handle_application_state_changed)
+
         QTimer.singleShot(0, self._register_hotkeys)
         QTimer.singleShot(0, self.open_chatgpt)
 
@@ -640,6 +661,7 @@ class MainWindow(QMainWindow):
         self.store.save_settings(self._read_settings_from_form())
         self._unregister_hotkeys()
         self._uninstall_keyboard_hook()
+        self.background_executor.shutdown(wait=False, cancel_futures=True)
         if self.tray_icon is not None:
             self.tray_icon.hide()
         self.browser_background_host.close()
@@ -657,11 +679,13 @@ class MainWindow(QMainWindow):
             self._deactivate_background_browser_host()
 
         self._sync_tray_toggle_action()
+        QTimer.singleShot(0, self._sync_browser_host_mode)
         QTimer.singleShot(0, self._sync_browser_runtime_state)
 
     def hideEvent(self, event) -> None:  # type: ignore[override]
         super().hideEvent(event)
         self._sync_tray_toggle_action()
+        QTimer.singleShot(0, self._sync_browser_host_mode)
         QTimer.singleShot(0, self._sync_browser_runtime_state)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
@@ -674,13 +698,22 @@ class MainWindow(QMainWindow):
             self._sync_tray_toggle_action()
 
             if self.isMinimized():
-                self._activate_background_browser_host()
+                if self.settings.keep_chatgpt_in_background or self.browser_interaction_active:
+                    self._activate_background_browser_host()
             elif self.isVisible():
                 self._deactivate_background_browser_host()
 
+            QTimer.singleShot(0, self._sync_browser_host_mode)
+            QTimer.singleShot(0, self._sync_browser_runtime_state)
+        elif event.type() in (QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate):
+            QTimer.singleShot(0, self._sync_browser_host_mode)
             QTimer.singleShot(0, self._sync_browser_runtime_state)
 
         super().changeEvent(event)
+
+    def _handle_application_state_changed(self, _state) -> None:
+        QTimer.singleShot(0, self._sync_browser_host_mode)
+        QTimer.singleShot(0, self._sync_browser_runtime_state)
 
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
         if event.key() == Qt.Key.Key_Escape and self.drawer_open:
@@ -719,6 +752,8 @@ class MainWindow(QMainWindow):
         self.prompt_template.setPlaceholderText("Ide kerül a kézi prompt.")
         self.prompt_template.setMinimumHeight(180)
         self.copy_response_to_clipboard = QCheckBox("A ChatGPT válasza kerüljön a vágólapra")
+        self.ocr_text_from_clipboard_image = QCheckBox("Szöveg kiolvasása képről")
+        self.webview_gpu_acceleration_enabled = QCheckBox("A ChatGPT nézet használja a GPU gyorsítást")
         self.type_out_hotkey_enabled = QCheckBox("A memóriába mentett fordítás legyen begépelhető gyorsbillentyűvel")
         self.type_out_hotkey = self._build_hotkey_edit()
         self.screen_clip_hotkey_enabled = QCheckBox("A Windows képkivágó nyíljon meg gyorsbillentyűvel")
@@ -750,10 +785,13 @@ class MainWindow(QMainWindow):
         form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         form_layout.addRow("Kézi prompt", self.prompt_template)
         form_layout.addRow("", self.copy_response_to_clipboard)
+        form_layout.addRow("", self.ocr_text_from_clipboard_image)
+        form_layout.addRow("", self.webview_gpu_acceleration_enabled)
         form_layout.addRow("", self.screen_clip_hotkey_enabled)
         form_layout.addRow("Képkivágási gyorsbillentyű", self.screen_clip_hotkey)
         form_layout.addRow("", self.type_out_hotkey_enabled)
         form_layout.addRow("Begépelési gyorsbillentyű", self.type_out_hotkey)
+        form_layout.addRow("", self.keep_chatgpt_in_background)
         form_layout.addRow("Overlay láthatósága", overlay_opacity_row)
         form_layout.addRow("Overlay megjelenési ideje (másodperc)", self.overlay_duration_seconds)
 
@@ -846,6 +884,30 @@ class MainWindow(QMainWindow):
         self.content_layout.addWidget(self.browser)
         root_layout.addWidget(self.content_surface, 1)
 
+        self.browser_status_placeholder = QFrame(self.content_surface)
+        self.browser_status_placeholder.setObjectName("browserStatusPlaceholder")
+        self.browser_status_placeholder.hide()
+        placeholder_layout = QVBoxLayout(self.browser_status_placeholder)
+        placeholder_layout.setContentsMargins(48, 42, 48, 42)
+        placeholder_layout.setSpacing(14)
+        placeholder_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.browser_status_title = QLabel("A ChatGPT nézet pihentetve van")
+        self.browser_status_title.setObjectName("browserStatusTitle")
+        self.browser_status_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.browser_status_body = QLabel("")
+        self.browser_status_body.setObjectName("browserStatusBody")
+        self.browser_status_body.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.browser_status_body.setWordWrap(True)
+        self.browser_status_hint = QLabel("")
+        self.browser_status_hint.setObjectName("browserStatusHint")
+        self.browser_status_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.browser_status_hint.setWordWrap(True)
+        placeholder_layout.addStretch(1)
+        placeholder_layout.addWidget(self.browser_status_title)
+        placeholder_layout.addWidget(self.browser_status_body)
+        placeholder_layout.addWidget(self.browser_status_hint)
+        placeholder_layout.addStretch(1)
+
         self.drawer_backdrop = DrawerBackdrop(self.content_surface)
         self.drawer_backdrop.clicked.connect(self.close_drawer)
         self.drawer_backdrop.hide()
@@ -907,6 +969,24 @@ class MainWindow(QMainWindow):
             }
             #contentSurface {
                 background: #171717;
+            }
+            #browserStatusPlaceholder {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #15181d, stop:1 #101216);
+                border: 1px solid #2b2d31;
+                border-radius: 18px;
+            }
+            #browserStatusTitle {
+                font-size: 22px;
+                font-weight: 700;
+                color: #f3f4f6;
+            }
+            #browserStatusBody {
+                font-size: 15px;
+                color: #e5e7eb;
+            }
+            #browserStatusHint {
+                font-size: 13px;
+                color: #9ca3af;
             }
             #drawerPanel {
                 background: transparent;
@@ -1121,6 +1201,9 @@ class MainWindow(QMainWindow):
     def _activate_background_browser_host(self) -> None:
         if self.browser_background_mode:
             self.browser_background_host.prepare_geometry(self)
+            if not self.browser_background_host.isVisible():
+                self.browser_background_host.show()
+            self._sync_browser_runtime_state()
             return
 
         self.browser_background_host.prepare_geometry(self)
@@ -1139,21 +1222,59 @@ class MainWindow(QMainWindow):
         self._layout_overlay_widgets()
         self._sync_browser_runtime_state()
 
+    def _should_use_background_browser_host(self) -> bool:
+        interaction_active = self.browser_interaction_active or self.page_loading or self.clipboard_translation_in_progress
+
+        return self._is_window_hidden_for_tray() and (self.settings.keep_chatgpt_in_background or interaction_active)
+
+    def _sync_browser_host_mode(self) -> None:
+        if not hasattr(self, "browser"):
+            return
+
+        should_use_background_host = self._should_use_background_browser_host()
+
+        if should_use_background_host and not self.browser_background_mode:
+            self._activate_background_browser_host()
+            return
+
+        if not should_use_background_host and self.browser_background_mode:
+            self._deactivate_background_browser_host()
+
     def _sync_browser_runtime_state(self) -> None:
         if not hasattr(self, "browser"):
             return
 
         page = self.browser.page()
+        window_visible = self.isVisible() and not self.isMinimized()
+        visible_main_window_render = window_visible and not self.browser_background_mode
+        background_interaction_active = self.browser_background_mode and (
+            self.browser_interaction_active or self.page_loading or self.clipboard_translation_in_progress
+        )
+        should_render_page = visible_main_window_render or background_interaction_active
+        frozen_state = getattr(QWebEnginePage.LifecycleState, "Frozen", QWebEnginePage.LifecycleState.Active)
 
         try:
-            page.setLifecycleState(QWebEnginePage.LifecycleState.Active)
+            page.setLifecycleState(
+                QWebEnginePage.LifecycleState.Active if should_render_page else frozen_state
+            )
+            page.setVisible(should_render_page)
+            self.browser.setUpdatesEnabled(should_render_page)
 
-            if self._is_window_hidden_for_tray():
-                page.setVisible(True)
-            elif self.browser.isVisible():
-                page.setVisible(True)
+            if self.browser_background_mode and self._is_window_hidden_for_tray():
+                if should_render_page:
+                    self.browser_background_host.show()
+                    self.browser.show()
+                else:
+                    self.browser_background_host.hide()
+                    self.browser.hide()
+            elif should_render_page:
+                self.browser.show()
+            else:
+                self.browser.hide()
         except RuntimeError:
             return
+        finally:
+            self._sync_browser_placeholder()
 
     def _build_tray_icon(self) -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -1205,8 +1326,9 @@ class MainWindow(QMainWindow):
 
     def _hide_to_tray(self, *, show_message: bool) -> None:
         self.window_was_maximized_before_hide = bool(self.windowState() & Qt.WindowState.WindowMaximized)
-        self._activate_background_browser_host()
+        self._sync_browser_host_mode()
         self.hide()
+        self._sync_browser_host_mode()
         self._sync_browser_runtime_state()
         self._sync_tray_toggle_action()
 
@@ -1225,10 +1347,11 @@ class MainWindow(QMainWindow):
         else:
             self.showNormal()
 
-        self._deactivate_background_browser_host()
+        self._sync_browser_host_mode()
         self.raise_()
         self.activateWindow()
         self._sync_window_buttons()
+        self._sync_browser_host_mode()
         self._sync_browser_runtime_state()
         self._sync_tray_toggle_action()
 
@@ -1244,6 +1367,128 @@ class MainWindow(QMainWindow):
             return
 
         self.close()
+
+    def _restart_application(self) -> None:
+        restart_command = self._build_restart_command()
+
+        try:
+            if sys.platform == "win32":
+                self._schedule_windows_restart(restart_command)
+            else:
+                subprocess.Popen(restart_command, start_new_session=True, close_fds=True)
+        except Exception as error:  # noqa: BLE001
+            self._set_live_status(f"Az újraindítás nem sikerült: {error}")
+            QMessageBox.warning(self, APP_NAME, f"Az újraindítás nem sikerült:\n{error}")
+            return
+
+        self.exit_requested = True
+        app = QApplication.instance()
+
+        if app is not None:
+            app.quit()
+            return
+
+        self.close()
+
+    def _build_restart_command(self) -> list[str]:
+        if getattr(sys, "frozen", False):
+            restart_target = self._resolve_restart_executable_path()
+            return [str(restart_target), *sys.argv[1:]]
+
+        if sys.argv:
+            return [sys.executable, *sys.argv]
+
+        project_root_main = Path(__file__).resolve().parents[1] / "main.py"
+        return [sys.executable, str(project_root_main)]
+
+    def _resolve_restart_executable_path(self) -> Path:
+        candidate_paths: list[Path] = []
+
+        if sys.argv and sys.argv[0]:
+            candidate_paths.append(Path(sys.argv[0]))
+
+        candidate_paths.append(Path(sys.executable))
+
+        for candidate_path in candidate_paths:
+            try:
+                resolved_path = candidate_path.resolve()
+            except OSError:
+                resolved_path = candidate_path
+
+            if "_MEI" in str(resolved_path):
+                continue
+
+            if resolved_path.exists():
+                return resolved_path
+
+        if sys.argv and sys.argv[0]:
+            return Path(sys.argv[0]).resolve()
+
+        return Path(sys.executable).resolve()
+
+    def _schedule_windows_restart(self, restart_command: list[str]) -> None:
+        executable = restart_command[0]
+        arguments = restart_command[1:]
+
+        if getattr(sys, "frozen", False):
+            working_directory = str(Path(executable).resolve().parent)
+        else:
+            working_directory = str(Path(__file__).resolve().parents[1])
+
+        script_path = Path(tempfile.gettempdir()) / f"gamer_translator_restart_{os.getpid()}_{uuid.uuid4().hex}.ps1"
+        script_lines = [
+            f"$ParentPid = {os.getpid()}",
+            "while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {",
+            "    Start-Sleep -Milliseconds 250",
+            "}",
+            "Start-Sleep -Milliseconds 700",
+            "$env:PYINSTALLER_RESET_ENVIRONMENT = '1'",
+            "Remove-Item Env:_PYI_APPLICATION_HOME_DIR -ErrorAction SilentlyContinue",
+            "Remove-Item Env:_PYI_ARCHIVE_FILE -ErrorAction SilentlyContinue",
+            "Remove-Item Env:_PYI_PARENT_PROCESS_LEVEL -ErrorAction SilentlyContinue",
+            "Remove-Item Env:_PYI_SPLASH_IPC -ErrorAction SilentlyContinue",
+            "Remove-Item Env:_MEIPASS2 -ErrorAction SilentlyContinue",
+            "$StartProcessArgs = @{",
+            f"    FilePath = {self._powershell_literal(executable)}",
+            f"    WorkingDirectory = {self._powershell_literal(working_directory)}",
+            "}",
+        ]
+
+        if arguments:
+            rendered_arguments = ", ".join(self._powershell_literal(argument) for argument in arguments)
+            script_lines.append(f"$StartProcessArgs.ArgumentList = @({rendered_arguments})")
+
+        script_lines.extend(
+            [
+                "Start-Process @StartProcessArgs",
+                "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+            ]
+        )
+        script_path.write_text("\n".join(script_lines), encoding="utf-8-sig")
+
+        creationflags = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+        powershell_executable = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        powershell_command = str(powershell_executable) if powershell_executable.exists() else "powershell.exe"
+        subprocess.Popen(
+            [
+                powershell_command,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+                str(script_path),
+            ],
+            creationflags=creationflags,
+            close_fds=True,
+        )
+
+    def _powershell_literal(self, value: str) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
 
     def _apply_native_window_theme(self) -> None:
         if sys.platform != "win32":
@@ -1275,6 +1520,7 @@ class MainWindow(QMainWindow):
         self.automation_ready = False
         self.current_url_label.setText(self.browser.url().toString())
         self._set_live_status("A ChatGPT oldal betöltése folyamatban.")
+        QTimer.singleShot(0, self._sync_browser_runtime_state)
 
     def _handle_load_finished(self, ok: bool) -> None:
         self.page_loading = False
@@ -1282,6 +1528,7 @@ class MainWindow(QMainWindow):
 
         if not ok:
             self._set_live_status("A böngészőoldal nem töltődött be rendesen.")
+            QTimer.singleShot(0, self._sync_browser_runtime_state)
             return
 
         try:
@@ -1289,20 +1536,38 @@ class MainWindow(QMainWindow):
             self._set_live_status("A ChatGPT oldal betöltve.")
         except RuntimeError as error:
             self._set_live_status(str(error))
+        finally:
+            QTimer.singleShot(0, self._sync_browser_runtime_state)
 
     def save_settings(self) -> None:
+        previous_settings = self.settings
         self.settings = self._read_settings_from_form()
         self.store.save_settings(self.settings)
         self.translation_overlay.set_overlay_opacity_percent(self.settings.overlay_opacity_percent)
         self._register_hotkeys()
+        self._sync_browser_host_mode()
+        QTimer.singleShot(0, self._sync_browser_runtime_state)
+        if previous_settings.webview_gpu_acceleration_enabled != self.settings.webview_gpu_acceleration_enabled:
+            self._set_live_status(self._hotkey_status_message("Beállítások elmentve. A program újraindul."))
+            self._restart_application()
+            return
+
         self._set_live_status(self._hotkey_status_message("Beállítások elmentve."))
 
     def reset_defaults(self) -> None:
+        previous_settings = self.settings
         self.settings = AppSettings.from_dict(DEFAULT_SETTINGS)
         self._apply_settings_to_form(self.settings)
         self.store.save_settings(self.settings)
         self.translation_overlay.set_overlay_opacity_percent(self.settings.overlay_opacity_percent)
         self._register_hotkeys()
+        self._sync_browser_host_mode()
+        QTimer.singleShot(0, self._sync_browser_runtime_state)
+        if previous_settings.webview_gpu_acceleration_enabled != self.settings.webview_gpu_acceleration_enabled:
+            self._set_live_status(self._hotkey_status_message("Az alapértékek vissza lettek állítva. A program újraindul."))
+            self._restart_application()
+            return
+
         self._set_live_status(self._hotkey_status_message("Az alapértékek vissza lettek állítva."))
 
     def toggle_drawer(self) -> None:
@@ -1313,12 +1578,18 @@ class MainWindow(QMainWindow):
 
     def open_chatgpt(self) -> None:
         self.settings = self._read_settings_from_form()
-        self._ensure_chatgpt_page_loaded(reload_if_open=True)
-        self._ensure_automation_ready()
+        self._begin_browser_interaction()
+
+        try:
+            self._ensure_chatgpt_page_loaded(reload_if_open=True)
+            self._ensure_automation_ready()
+        finally:
+            self._end_browser_interaction()
 
     def send_prompt_now(self) -> None:
         self.settings = self._read_settings_from_form()
         self._set_live_status("Prompt küldése folyamatban.")
+        self._begin_browser_interaction()
 
         try:
             self._ensure_chatgpt_page_loaded(reload_if_open=False)
@@ -1333,7 +1604,7 @@ class MainWindow(QMainWindow):
                     "autoSubmit": True,
                     "copyResponseToClipboard": False,
                     "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
-                    "responseTimeoutMs": 45000,
+                    "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
                     "beforeSubmitDelayMs": self.settings.before_submit_delay_ms,
                     "afterAttachDelayMs": self.settings.after_attach_delay_ms,
                 }
@@ -1344,6 +1615,8 @@ class MainWindow(QMainWindow):
             self._save_last_run_status(str(error))
             self._set_live_status(str(error))
             QMessageBox.warning(self, APP_NAME, str(error))
+        finally:
+            self._end_browser_interaction()
 
     def _ensure_chatgpt_page_loaded(self, *, reload_if_open: bool) -> None:
         current_url = self.browser.url().toString().strip()
@@ -1385,7 +1658,7 @@ class MainWindow(QMainWindow):
 
         self.clipboard_debounce_timer.start()
 
-    def _process_clipboard_translation(self, payload: dict[str, str]) -> None:
+    def _process_clipboard_translation(self, payload: dict[str, Any]) -> None:
         self.settings = self._read_settings_from_form()
 
         if not self.settings.monitoring_enabled:
@@ -1397,6 +1670,7 @@ class MainWindow(QMainWindow):
             return
 
         self.clipboard_translation_in_progress = True
+        self._begin_browser_interaction()
 
         try:
             self._save_last_run_status("Új kép érkezett a vágólapra.")
@@ -1404,28 +1678,16 @@ class MainWindow(QMainWindow):
             self._ensure_chatgpt_page_loaded(reload_if_open=False)
             self._ensure_automation_ready()
             self._wait_with_events(self.settings.page_load_delay_ms)
+            delivery_payload, success_status_message, empty_response_status_message = self._build_translation_delivery_payload(payload)
 
-            result = self._execute_delivery(
-                {
-                    "prompt": "",
-                    "imageDataUrl": payload["imageDataUrl"],
-                    "imageMimeType": payload["imageMimeType"],
-                    "imageFilename": payload["imageFilename"],
-                    "autoSubmit": True,
-                    "copyResponseToClipboard": self.settings.copy_response_to_clipboard,
-                    "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
-                    "responseTimeoutMs": 45000,
-                    "beforeSubmitDelayMs": self.settings.before_submit_delay_ms,
-                    "afterAttachDelayMs": self.settings.after_attach_delay_ms,
-                }
-            )
+            result = self._execute_delivery(delivery_payload)
 
             translated_text = str(result.get("assistantResponseText") or "").strip()
 
             if self.settings.copy_response_to_clipboard:
                 if not translated_text:
                     self._hide_translation_overlay()
-                    self._save_last_run_status("A kép elküldve, de a ChatGPT válasza nem lett kiolvasható.")
+                    self._save_last_run_status(empty_response_status_message)
                     return
 
                 self.last_translated_text = translated_text
@@ -1443,19 +1705,112 @@ class MainWindow(QMainWindow):
             else:
                 self._hide_translation_overlay()
 
-            self._save_last_run_status("A kép elküldve a ChatGPT-nek.")
+            self._save_last_run_status(success_status_message)
         except Exception as error:  # noqa: BLE001
             self._hide_translation_overlay()
             self._save_last_run_status(str(error))
             self._set_live_status(str(error))
         finally:
             self.clipboard_translation_in_progress = False
+            self._end_browser_interaction()
+
+    def _build_translation_delivery_payload(self, payload: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+        if self.settings.ocr_text_from_clipboard_image:
+            self._set_live_status("Szöveg kiolvasása képről folyamatban.")
+            extracted_text_candidates = self._run_in_background_with_events(
+                lambda: self.ocr_service.extract_text_candidates(
+                    bytes(payload.get("imageBytes") or b""),
+                    limit=5,
+                ),
+                progress_message="Szöveg kiolvasása képről folyamatban.",
+            )
+
+            if not extracted_text_candidates:
+                raise RuntimeError("A képről nem sikerült kiolvasni szöveget.")
+
+            return (
+                {
+                    "prompt": self._build_ocr_translation_prompt(extracted_text_candidates),
+                    "imageDataUrl": "",
+                    "imageMimeType": "",
+                    "imageFilename": "",
+                    "autoSubmit": True,
+                    "copyResponseToClipboard": self.settings.copy_response_to_clipboard,
+                    "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
+                    "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
+                    "beforeSubmitDelayMs": self.settings.before_submit_delay_ms,
+                    "afterAttachDelayMs": self.settings.after_attach_delay_ms,
+                },
+                "A képről kiolvasott szöveg elküldve a ChatGPT-nek.",
+                "A képről kiolvasott szöveg elküldve, de a ChatGPT válasza nem lett kiolvasható.",
+            )
+
+        return (
+            {
+                "prompt": "",
+                "imageDataUrl": str(payload["imageDataUrl"]),
+                "imageMimeType": str(payload["imageMimeType"]),
+                "imageFilename": str(payload["imageFilename"]),
+                "autoSubmit": True,
+                "copyResponseToClipboard": self.settings.copy_response_to_clipboard,
+                "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
+                "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
+                "beforeSubmitDelayMs": self.settings.before_submit_delay_ms,
+                "afterAttachDelayMs": self.settings.after_attach_delay_ms,
+            },
+            "A kép elküldve a ChatGPT-nek.",
+            "A kép elküldve, de a ChatGPT válasza nem lett kiolvasható.",
+        )
+
+    def _build_ocr_translation_prompt(self, extracted_text_candidates: tuple[str, ...]) -> str:
+        numbered_candidates = "\n\n".join(
+            f"{index}.\n{candidate}"
+            for index, candidate in enumerate(extracted_text_candidates, start=1)
+        )
+        return f"OCR candidates from the same image:\n\n{numbered_candidates}"
 
     def _play_ready_sound(self) -> None:
         try:
             winsound.MessageBeep(winsound.MB_ICONASTERISK)
         except RuntimeError:
             QApplication.beep()
+
+    def _run_in_background_with_events(self, task: Callable[[], Any], *, progress_message: str | None = None) -> Any:
+        future = self.background_executor.submit(self._run_low_priority_background_task, task)
+        last_status_update = 0.0
+
+        while not future.done():
+            if progress_message and time.monotonic() - last_status_update >= 0.35:
+                self._set_live_status(progress_message)
+                last_status_update = time.monotonic()
+
+            QGuiApplication.processEvents()
+            time.sleep(0.04)
+
+        return future.result()
+
+    def _run_low_priority_background_task(self, task: Callable[[], Any]) -> Any:
+        if sys.platform != "win32":
+            return task()
+
+        try:
+            current_thread = kernel32.GetCurrentThread()
+            previous_priority = kernel32.GetThreadPriority(current_thread)
+
+            if previous_priority != THREAD_PRIORITY_ERROR_RETURN:
+                kernel32.SetThreadPriority(current_thread, THREAD_PRIORITY_LOWEST)
+        except Exception:  # noqa: BLE001
+            current_thread = None
+            previous_priority = THREAD_PRIORITY_ERROR_RETURN
+
+        try:
+            return task()
+        finally:
+            if current_thread is not None and previous_priority != THREAD_PRIORITY_ERROR_RETURN:
+                try:
+                    kernel32.SetThreadPriority(current_thread, previous_priority)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _save_last_run_status(self, message: str) -> None:
         self.last_run_status = self.store.save_last_run_status(message)
@@ -1465,13 +1820,16 @@ class MainWindow(QMainWindow):
     def _render_last_run_status(self, status: LastRunStatus) -> None:
         if not status.message:
             self.last_run_label.setText("Még nincs futási állapot.")
+            self._sync_browser_placeholder()
             return
 
         self.last_run_label.setText(f"{status.at}: {status.message}")
+        self._sync_browser_placeholder()
 
     def _set_live_status(self, message: str) -> None:
         self.status_label.setText(message)
         self.top_status_label.setText(message)
+        self._sync_browser_placeholder()
 
     def _should_show_translation_overlay(self) -> bool:
         return self._is_window_hidden_for_tray() or self.browser_background_mode
@@ -1491,6 +1849,22 @@ class MainWindow(QMainWindow):
 
     def _hide_translation_overlay(self) -> None:
         self.translation_overlay.hide_overlay()
+
+    def _sync_browser_placeholder(self) -> None:
+        if not hasattr(self, "browser_status_placeholder") or not hasattr(self, "content_surface"):
+            return
+
+        self.browser_status_placeholder.hide()
+
+    def _begin_browser_interaction(self) -> None:
+        self.browser_interaction_active = True
+        self._sync_browser_host_mode()
+        self._sync_browser_runtime_state()
+
+    def _end_browser_interaction(self) -> None:
+        self.browser_interaction_active = False
+        self._sync_browser_host_mode()
+        self._sync_browser_runtime_state()
 
     def _register_hotkeys(self) -> None:
         if sys.platform != "win32":
@@ -1540,6 +1914,8 @@ class MainWindow(QMainWindow):
             action: hotkey for action, hotkey in configured_hotkeys.items() if action not in self.hotkey_errors
         }
         self.hotkey_pressed_states = {action: False for action in self.registered_hotkeys}
+        self.registered_hotkey_primary_keys = {hotkey_key for _hotkey_modifiers, hotkey_key in self.registered_hotkeys.values()}
+        self._update_keyboard_hook_state()
 
     def _unregister_hotkeys(self) -> None:
         if sys.platform != "win32":
@@ -1547,6 +1923,18 @@ class MainWindow(QMainWindow):
 
         self.registered_hotkeys = {}
         self.hotkey_pressed_states = {}
+        self.registered_hotkey_primary_keys = set()
+        self._update_keyboard_hook_state()
+
+    def _update_keyboard_hook_state(self) -> None:
+        if sys.platform != "win32":
+            return
+
+        if self.registered_hotkeys:
+            self._install_keyboard_hook()
+            return
+
+        self._uninstall_keyboard_hook()
 
     def _install_keyboard_hook(self) -> None:
         if sys.platform != "win32" or self.keyboard_hook_handle is not None:
@@ -1576,6 +1964,12 @@ class MainWindow(QMainWindow):
         message = int(w_param)
         key_data = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
         vk_code = int(key_data.vkCode)
+
+        if key_data.flags & LLKHF_INJECTED:
+            return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
+
+        if vk_code not in self.registered_hotkey_primary_keys:
+            return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
 
         if message in (WM_KEYDOWN, WM_SYSKEYDOWN) and self._handle_hotkey_keydown(vk_code):
             return 1
@@ -1706,8 +2100,11 @@ class MainWindow(QMainWindow):
     def _apply_settings_to_form(self, settings: AppSettings) -> None:
         self.prompt_template.setPlainText(settings.prompt_template)
         self.copy_response_to_clipboard.setChecked(settings.copy_response_to_clipboard)
+        self.ocr_text_from_clipboard_image.setChecked(settings.ocr_text_from_clipboard_image)
+        self.webview_gpu_acceleration_enabled.setChecked(settings.webview_gpu_acceleration_enabled)
         self.type_out_hotkey_enabled.setChecked(settings.type_out_hotkey_enabled)
         self.screen_clip_hotkey_enabled.setChecked(settings.screen_clip_hotkey_enabled)
+        self.keep_chatgpt_in_background.setChecked(settings.keep_chatgpt_in_background)
         self._set_hotkey_value(self.screen_clip_hotkey, settings.screen_clip_hotkey)
         self._set_hotkey_value(self.type_out_hotkey, settings.type_out_hotkey)
         self.overlay_opacity_slider.setValue(settings.overlay_opacity_percent)
@@ -1721,10 +2118,12 @@ class MainWindow(QMainWindow):
         return AppSettings(
             monitoring_enabled=True,
             chatgpt_url=CHATGPT_URL,
-            keep_chatgpt_in_background=True,
+            keep_chatgpt_in_background=self.keep_chatgpt_in_background.isChecked(),
             prompt_template=self.prompt_template.toPlainText().strip() or str(DEFAULT_SETTINGS["promptTemplate"]),
             auto_submit=True,
             copy_response_to_clipboard=self.copy_response_to_clipboard.isChecked(),
+            ocr_text_from_clipboard_image=self.ocr_text_from_clipboard_image.isChecked(),
+            webview_gpu_acceleration_enabled=self.webview_gpu_acceleration_enabled.isChecked(),
             type_out_hotkey_enabled=self.type_out_hotkey_enabled.isChecked(),
             type_out_hotkey=self._read_hotkey_value(self.type_out_hotkey, str(DEFAULT_SETTINGS["typeOutHotkey"])),
             screen_clip_hotkey_enabled=self.screen_clip_hotkey_enabled.isChecked(),
@@ -1804,6 +2203,13 @@ class MainWindow(QMainWindow):
 
         surface_width = max(320, self.content_surface.width())
         surface_height = max(320, self.content_surface.height())
+        placeholder_margin = 24
+        self.browser_status_placeholder.setGeometry(
+            placeholder_margin,
+            placeholder_margin,
+            max(160, surface_width - (placeholder_margin * 2)),
+            max(160, surface_height - (placeholder_margin * 2)),
+        )
         self.drawer_backdrop.setGeometry(0, 0, surface_width, surface_height)
 
         visible_x, hidden_x, top_margin, panel_height = self._drawer_positions()
@@ -1812,8 +2218,11 @@ class MainWindow(QMainWindow):
         self.drawer_panel.resize(self.drawer_panel.width(), panel_height)
 
         if self.drawer_open:
+            self.browser_status_placeholder.raise_()
             self.drawer_backdrop.raise_()
             self.drawer_panel.raise_()
+
+        self._sync_browser_placeholder()
 
     def _ensure_automation_ready(self) -> None:
         if self.page_loading:
@@ -1855,7 +2264,7 @@ class MainWindow(QMainWindow):
         """
         self._run_javascript(launch_script, timeout_ms=5000)
 
-        timeout_ms = int(payload.get("pageReadyTimeoutMs", self.settings.page_ready_timeout_ms)) + int(payload.get("responseTimeoutMs", 45000)) + 10000
+        timeout_ms = int(payload.get("pageReadyTimeoutMs", self.settings.page_ready_timeout_ms)) + int(payload.get("responseTimeoutMs", DEFAULT_RESPONSE_TIMEOUT_MS)) + 10000
         started_at = time.monotonic()
 
         while (time.monotonic() - started_at) * 1000 < timeout_ms:
@@ -1947,7 +2356,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(delay_ms, loop.quit)
         loop.exec()
 
-    def _read_clipboard_image_payload(self) -> dict[str, str] | None:
+    def _read_clipboard_image_payload(self) -> dict[str, Any] | None:
         image = self.clipboard.image()
 
         if image.isNull():
@@ -1971,6 +2380,7 @@ class MainWindow(QMainWindow):
             "imageMimeType": "image/png",
             "imageFilename": "snip.png",
             "imageSignature": signature,
+            "imageBytes": raw_bytes,
         }
 
     def _current_clipboard_signature(self) -> str:

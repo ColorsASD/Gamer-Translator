@@ -22,6 +22,10 @@ python -m PyInstaller `
   --clean `
   --onefile `
   --windowed `
+  --collect-all "rapidocr" `
+  --collect-all "winsdk" `
+  --collect-all "wordfreq" `
+  --hidden-import "onnxruntime" `
   --name "Gamer Translator" `
   --icon "gamer_translator\assets\icon.ico" `
   --add-data "gamer_translator\automation.js;gamer_translator" `

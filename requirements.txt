@@ -1,2 +1,7 @@
 PyInstaller>=6.0
 PySide6>=6.7
+Pillow>=10.0
+rapidocr>=3.7
+onnxruntime>=1.24
+winsdk>=1.0.0b10
+wordfreq>=3.1
