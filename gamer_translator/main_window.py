@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QEasingCurve, QBuffer, QEvent, QEventLoop, QIODevice, QPoint, Property, QPropertyAnimation, QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QBuffer, QEasingCurve, QEvent, QEventLoop, QIODevice, QPoint, Property, QPropertyAnimation, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QCursor, QGuiApplication, QIcon, QKeySequence, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -51,20 +51,27 @@ if sys.platform == "win32":
 
     user32 = ctypes.windll.user32
     dwmapi = ctypes.windll.dwmapi
+    kernel32 = ctypes.windll.kernel32
     ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+    LRESULT = ctypes.c_longlong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long
 
     HWND_TOPMOST = -1
     MOD_ALT = 0x0001
     MOD_CONTROL = 0x0002
     MOD_SHIFT = 0x0004
     MOD_WIN = 0x0008
-    MOD_NOREPEAT = 0x4000
     INPUT_KEYBOARD = 1
     KEYEVENTF_EXTENDEDKEY = 0x0001
     KEYEVENTF_KEYUP = 0x0002
     KEYEVENTF_UNICODE = 0x0004
     KEYEVENTF_SCANCODE = 0x0008
     MAPVK_VK_TO_VSC = 0
+    HC_ACTION = 0
+    WH_KEYBOARD_LL = 13
+    WM_KEYDOWN = 0x0100
+    WM_KEYUP = 0x0101
+    WM_SYSKEYDOWN = 0x0104
+    WM_SYSKEYUP = 0x0105
     VK_CONTROL = 0x11
     VK_MENU = 0x12
     VK_SHIFT = 0x10
@@ -116,6 +123,15 @@ if sys.platform == "win32":
             ("union", INPUTUNION),
         ]
 
+    class KBDLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [
+            ("vkCode", wintypes.DWORD),
+            ("scanCode", wintypes.DWORD),
+            ("flags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ULONG_PTR),
+        ]
+
     HOTKEY_MODIFIER_ALIASES = {
         "CTRL": MOD_CONTROL,
         "CONTROL": MOD_CONTROL,
@@ -153,8 +169,15 @@ if sys.platform == "win32":
     for offset in range(1, 25):
         HOTKEY_KEYCODES[f"F{offset}"] = 0x6F + offset
 
+    HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
     user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
     user32.SendInput.restype = wintypes.UINT
+    user32.SetWindowsHookExW.argtypes = (ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD)
+    user32.SetWindowsHookExW.restype = wintypes.HANDLE
+    user32.CallNextHookEx.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+    user32.CallNextHookEx.restype = LRESULT
+    user32.UnhookWindowsHookEx.argtypes = (wintypes.HANDLE,)
+    user32.UnhookWindowsHookEx.restype = wintypes.BOOL
     user32.SetWindowPos.argtypes = (
         wintypes.HWND,
         wintypes.HWND,
@@ -167,6 +190,8 @@ if sys.platform == "win32":
     user32.SetWindowPos.restype = wintypes.BOOL
     dwmapi.DwmSetWindowAttribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
     dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
+    kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
+    kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 
 
 def resource_path(relative_path: str) -> Path:
@@ -569,6 +594,8 @@ class MainWindow(QMainWindow):
         self.registered_hotkeys: dict[str, tuple[int, int]] = {}
         self.hotkey_errors: dict[str, str] = {}
         self.hotkey_pressed_states: dict[str, bool] = {}
+        self.keyboard_hook_handle = None
+        self.keyboard_hook_callback = None
         self.native_window_theme_applied = False
         self.exit_requested = False
         self.window_was_maximized_before_hide = False
@@ -578,9 +605,6 @@ class MainWindow(QMainWindow):
         self.tray_toggle_action: QAction | None = None
         self.browser_background_host = BrowserBackgroundHost()
         self.translation_overlay = TranslationOverlay()
-        self.hotkey_timer = QTimer(self)
-        self.hotkey_timer.setInterval(35)
-        self.hotkey_timer.timeout.connect(self._poll_hotkeys)
 
         self._build_browser()
         self._build_ui()
@@ -603,6 +627,7 @@ class MainWindow(QMainWindow):
         self._apply_window_icon()
         self._build_tray_icon()
         self._sync_window_buttons()
+        self._install_keyboard_hook()
         QTimer.singleShot(0, self._register_hotkeys)
         QTimer.singleShot(0, self.open_chatgpt)
 
@@ -614,6 +639,7 @@ class MainWindow(QMainWindow):
 
         self.store.save_settings(self._read_settings_from_form())
         self._unregister_hotkeys()
+        self._uninstall_keyboard_hook()
         if self.tray_icon is not None:
             self.tray_icon.hide()
         self.browser_background_host.close()
@@ -663,9 +689,6 @@ class MainWindow(QMainWindow):
             return
 
         super().keyPressEvent(event)
-
-    def nativeEvent(self, event_type, message):  # type: ignore[override]
-        return super().nativeEvent(event_type, message)
 
     def _build_browser(self) -> None:
         self.profile = QWebEngineProfile(APP_NAME, self)
@@ -1518,33 +1541,76 @@ class MainWindow(QMainWindow):
         }
         self.hotkey_pressed_states = {action: False for action in self.registered_hotkeys}
 
-        if self.registered_hotkeys:
-            self.hotkey_timer.start()
-
     def _unregister_hotkeys(self) -> None:
         if sys.platform != "win32":
             return
 
-        self.hotkey_timer.stop()
         self.registered_hotkeys = {}
         self.hotkey_pressed_states = {}
 
-    def _poll_hotkeys(self) -> None:
-        if sys.platform != "win32" or not self.registered_hotkeys:
+    def _install_keyboard_hook(self) -> None:
+        if sys.platform != "win32" or self.keyboard_hook_handle is not None:
             return
 
-        for action, (hotkey_modifiers, hotkey_key) in self.registered_hotkeys.items():
-            hotkey_key_down = bool(user32.GetAsyncKeyState(hotkey_key) & 0x8000)
-            hotkey_active = hotkey_key_down and self._current_modifiers_match(hotkey_modifiers)
-            hotkey_pressed = self.hotkey_pressed_states.get(action, False)
+        module_handle = kernel32.GetModuleHandleW(None)
+        self.keyboard_hook_callback = HOOKPROC(self._keyboard_hook_proc)
+        self.keyboard_hook_handle = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self.keyboard_hook_callback, module_handle, 0)
 
-            if hotkey_active and not hotkey_pressed:
-                self.hotkey_pressed_states[action] = True
-                self._trigger_hotkey_action(action)
+        if not self.keyboard_hook_handle:
+            self.keyboard_hook_callback = None
+
+    def _uninstall_keyboard_hook(self) -> None:
+        if sys.platform != "win32":
+            return
+
+        if self.keyboard_hook_handle is not None:
+            user32.UnhookWindowsHookEx(self.keyboard_hook_handle)
+            self.keyboard_hook_handle = None
+
+        self.keyboard_hook_callback = None
+
+    def _keyboard_hook_proc(self, n_code: int, w_param, l_param):
+        if n_code != HC_ACTION or not self.registered_hotkeys:
+            return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
+
+        message = int(w_param)
+        key_data = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+        vk_code = int(key_data.vkCode)
+
+        if message in (WM_KEYDOWN, WM_SYSKEYDOWN) and self._handle_hotkey_keydown(vk_code):
+            return 1
+
+        if message in (WM_KEYUP, WM_SYSKEYUP) and self._handle_hotkey_keyup(vk_code):
+            return 1
+
+        return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
+
+    def _handle_hotkey_keydown(self, vk_code: int) -> bool:
+        for action, (hotkey_modifiers, hotkey_key) in self.registered_hotkeys.items():
+            if hotkey_key != vk_code:
                 continue
 
-            if not hotkey_key_down:
+            if not self._current_modifiers_match(hotkey_modifiers):
+                continue
+
+            if not self.hotkey_pressed_states.get(action, False):
+                self.hotkey_pressed_states[action] = True
+                QTimer.singleShot(0, lambda action_name=action: self._trigger_hotkey_action(action_name))
+
+            return True
+
+        return False
+
+    def _handle_hotkey_keyup(self, vk_code: int) -> bool:
+        for action, (_hotkey_modifiers, hotkey_key) in self.registered_hotkeys.items():
+            if hotkey_key != vk_code:
+                continue
+
+            if self.hotkey_pressed_states.get(action, False):
                 self.hotkey_pressed_states[action] = False
+                return True
+
+        return False
 
     def _trigger_hotkey_action(self, action: str) -> None:
         if action == "type_out":

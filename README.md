@@ -48,7 +48,7 @@ PowerShellből a projekt gyökérmappájában:
 .\build.ps1
 ```
 
-Az elkészült egyfájlos program a `release\Gamer Translator.exe` fájlba kerül.
+Az elkészült egyfájlos program a `dist\Gamer Translator.exe` fájlba kerül.
 
 ## Használat
 
