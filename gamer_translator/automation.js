@@ -1,4 +1,109 @@
 (() => {
+  const TARGET_UI_FPS = 50;
+  const FRAME_INTERVAL_MS = 20;
+
+  function ensureFramePacer() {
+    const existingPacer = window.__gamerTranslatorFramePacer;
+
+    if (existingPacer && typeof existingPacer.start === "function") {
+      existingPacer.start();
+
+      if (typeof existingPacer.ensureNode === "function") {
+        existingPacer.ensureNode();
+      }
+
+      return;
+    }
+
+    const state = {
+      intervalId: null,
+      pulseState: false,
+      pulseNode: null
+    };
+
+    const ensureNode = () => {
+      if (state.pulseNode instanceof HTMLElement && state.pulseNode.isConnected) {
+        return state.pulseNode;
+      }
+
+      const host = document.body || document.documentElement;
+
+      if (!(host instanceof HTMLElement)) {
+        return null;
+      }
+
+      const pulseNode = document.createElement("div");
+      pulseNode.id = "__gamerTranslatorFramePacer";
+      pulseNode.setAttribute("aria-hidden", "true");
+      Object.assign(pulseNode.style, {
+        position: "fixed",
+        right: "0",
+        bottom: "0",
+        width: "1px",
+        height: "1px",
+        margin: "0",
+        padding: "0",
+        border: "0",
+        pointerEvents: "none",
+        zIndex: "2147483647",
+        backgroundColor: "rgba(14, 17, 23, 0.006)",
+        opacity: "1",
+        transform: "translateZ(0)",
+        willChange: "background-color, transform"
+      });
+      host.appendChild(pulseNode);
+      state.pulseNode = pulseNode;
+      return pulseNode;
+    };
+
+    const tick = () => {
+      const pulseNode = ensureNode();
+
+      if (!(pulseNode instanceof HTMLElement)) {
+        return;
+      }
+
+      state.pulseState = !state.pulseState;
+      pulseNode.style.backgroundColor = state.pulseState
+        ? "rgba(14, 17, 23, 0.006)"
+        : "rgba(18, 22, 29, 0.012)";
+      pulseNode.style.transform = state.pulseState
+        ? "translateZ(0)"
+        : "translate3d(0, 0, 0)";
+    };
+
+    const start = () => {
+      ensureNode();
+
+      if (state.intervalId !== null) {
+        return;
+      }
+
+      tick();
+      state.intervalId = window.setInterval(tick, FRAME_INTERVAL_MS);
+    };
+
+    const stop = () => {
+      if (state.intervalId === null) {
+        return;
+      }
+
+      window.clearInterval(state.intervalId);
+      state.intervalId = null;
+    };
+
+    state.ensureNode = ensureNode;
+    state.start = start;
+    state.stop = stop;
+    window.__gamerTranslatorFramePacer = state;
+
+    start();
+    document.addEventListener("visibilitychange", start, { passive: true });
+    window.addEventListener("pageshow", start, { passive: true });
+  }
+
+  ensureFramePacer();
+
   if (typeof window.__gamerTranslatorDeliver === "function") {
     return;
   }
@@ -347,7 +452,7 @@
           return liveComposer;
         }
 
-        await wait(80);
+        await wait(FRAME_INTERVAL_MS);
       }
 
       return findComposer() || composer;
@@ -553,7 +658,7 @@
           }
         }
 
-        await wait(80);
+        await wait(FRAME_INTERVAL_MS);
       }
 
       return findComposer() || composer;
@@ -780,7 +885,7 @@
           if (isTransientAssistantText(candidate) || isAssistantMessageBusy(latestAssistantNode)) {
             lastCandidate = "";
             stableSince = 0;
-            await wait(120);
+            await wait(FRAME_INTERVAL_MS);
             continue;
           }
 
@@ -806,7 +911,7 @@
           }
         }
 
-        await wait(80);
+        await wait(FRAME_INTERVAL_MS);
       }
 
       const finalSnapshot = captureAssistantSnapshot();
@@ -1131,7 +1236,7 @@
           return value;
         }
 
-        await wait(120);
+        await wait(FRAME_INTERVAL_MS);
       }
 
       throw new Error(`Nem található: ${label}.`);
@@ -1205,7 +1310,7 @@
           return true;
         }
 
-        await wait(45);
+        await wait(FRAME_INTERVAL_MS);
       }
 
       return false;
@@ -1241,7 +1346,7 @@
           return true;
         }
 
-        await wait(60);
+        await wait(FRAME_INTERVAL_MS);
       }
 
       return false;

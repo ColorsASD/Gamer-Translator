@@ -54,6 +54,9 @@ BROWSER_CONSOLE_DEBUG = os.environ.get("GAMER_TRANSLATOR_DEBUG_BROWSER", "").str
 IDLE_CHAT_KEEPALIVE_INTERVAL_MS = 120000
 IDLE_CHAT_KEEPALIVE_CHECK_INTERVAL_MS = 10000
 IDLE_CHAT_KEEPALIVE_RESPONSE_TIMEOUT_MS = 30000
+TARGET_UI_FPS = 50
+UI_FRAME_INTERVAL_MS = 20
+UI_FRAME_INTERVAL_SECONDS = UI_FRAME_INTERVAL_MS / 1000.0
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -965,6 +968,7 @@ class MainWindow(QMainWindow):
         self.tray_message_shown = False
         self.browser_background_mode = False
         self.browser_interaction_active = False
+        self.frame_pulse_state = False
         self.browser_keepalive_failures = 0
         self.last_chat_activity_at = time.monotonic()
         self.idle_chat_keepalive_in_progress = False
@@ -991,6 +995,11 @@ class MainWindow(QMainWindow):
         self.chat_idle_keepalive_timer.start()
 
         self._build_browser()
+        self.browser_refresh_timer = QTimer(self)
+        self.browser_refresh_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.browser_refresh_timer.setInterval(UI_FRAME_INTERVAL_MS)
+        self.browser_refresh_timer.timeout.connect(self._refresh_browser_view)
+        self.browser_refresh_timer.start()
         self._build_ui()
         self._apply_styles()
         self._apply_settings_to_form(self.settings)
@@ -1285,6 +1294,13 @@ class MainWindow(QMainWindow):
         placeholder_layout.addWidget(self.browser_status_body)
         placeholder_layout.addWidget(self.browser_status_hint)
         placeholder_layout.addStretch(1)
+
+        self.frame_pulse_dot = QFrame(self.content_surface)
+        self.frame_pulse_dot.setObjectName("framePulseDot")
+        self.frame_pulse_dot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.frame_pulse_dot.setStyleSheet("background: rgba(16, 18, 22, 1);")
+        self.frame_pulse_dot.setGeometry(0, 0, 1, 1)
+        self.frame_pulse_dot.show()
 
         self.drawer_backdrop = DrawerBackdrop(self.content_surface)
         self.drawer_backdrop.clicked.connect(self.close_drawer)
@@ -2418,7 +2434,7 @@ class MainWindow(QMainWindow):
                 last_status_update = time.monotonic()
 
             QGuiApplication.processEvents()
-            time.sleep(0.04)
+            time.sleep(UI_FRAME_INTERVAL_SECONDS)
 
         return future.result()
 
@@ -2488,6 +2504,29 @@ class MainWindow(QMainWindow):
             return
 
         self.browser_status_placeholder.hide()
+
+    def _refresh_browser_view(self) -> None:
+        if not hasattr(self, "browser"):
+            return
+
+        if hasattr(self, "frame_pulse_dot") and self.isVisible() and not self.isMinimized():
+            self.frame_pulse_state = not self.frame_pulse_state
+            pulse_alpha = 1 if self.frame_pulse_state else 2
+            pulse_red = 16 if self.frame_pulse_state else 19
+            pulse_green = 18 if self.frame_pulse_state else 21
+            pulse_blue = 22 if self.frame_pulse_state else 26
+            self.frame_pulse_dot.setStyleSheet(
+                f"background: rgba({pulse_red}, {pulse_green}, {pulse_blue}, {pulse_alpha});"
+            )
+            self.frame_pulse_dot.repaint()
+
+        if not self.browser.isVisible() or not self.browser.updatesEnabled():
+            return
+
+        self.browser.update()
+
+        if self.browser_background_mode and self.browser_background_host.isVisible():
+            self.browser_background_host.update()
 
     def _begin_browser_interaction(self) -> None:
         self._mark_chat_activity()
@@ -2890,6 +2929,12 @@ class MainWindow(QMainWindow):
             self.drawer_backdrop.raise_()
             self.drawer_panel.raise_()
 
+        if hasattr(self, "frame_pulse_dot"):
+            pulse_x = max(0, surface_width - 1)
+            pulse_y = max(0, surface_height - 1)
+            self.frame_pulse_dot.setGeometry(pulse_x, pulse_y, 1, 1)
+            self.frame_pulse_dot.raise_()
+
         self._sync_browser_placeholder()
 
     def _ensure_automation_ready(self) -> None:
@@ -2964,7 +3009,7 @@ class MainWindow(QMainWindow):
 
                 return result
 
-            self._wait_with_events(120)
+            self._wait_with_events(UI_FRAME_INTERVAL_MS)
 
         raise RuntimeError("A ChatGPT oldaloldali művelete nem fejeződött be időben.")
 
