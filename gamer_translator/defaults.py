@@ -179,9 +179,6 @@ DEFAULT_SETTINGS = {
     "quickChatHotkey": "Alt+X",
     "overlayOpacityPercent": 50,
     "overlayDurationSeconds": 30,
-    "pageLoadDelayMs": 0,
     "pageReadyTimeoutMs": 25000,
-    "beforeSubmitDelayMs": 0,
-    "afterAttachDelayMs": 0,
 }
 CHATGPT_HOSTS = ("chatgpt.com", "chat.openai.com")

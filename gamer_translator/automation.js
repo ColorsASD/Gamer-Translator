@@ -1,6 +1,51 @@
 (() => {
-  const TARGET_UI_FPS = 50;
   const FRAME_INTERVAL_MS = 20;
+  const RESPONSE_CHANGE_WAIT_MS = 700;
+  const DOM_TEXT_BLOCK_TAGS = new Set([
+    "ARTICLE",
+    "ASIDE",
+    "BLOCKQUOTE",
+    "BR",
+    "CODE",
+    "DIV",
+    "DL",
+    "DT",
+    "DD",
+    "FIGCAPTION",
+    "FIGURE",
+    "FOOTER",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "H5",
+    "H6",
+    "HEADER",
+    "HR",
+    "LI",
+    "MAIN",
+    "OL",
+    "P",
+    "PRE",
+    "SECTION",
+    "TABLE",
+    "TBODY",
+    "TD",
+    "TH",
+    "THEAD",
+    "TR",
+    "UL"
+  ]);
+  const DOM_TEXT_SKIP_TAGS = new Set([
+    "BUTTON",
+    "NOSCRIPT",
+    "SCRIPT",
+    "STYLE",
+    "SVG",
+    "TEMPLATE"
+  ]);
+  const assistantNodeIds = new WeakMap();
+  let nextAssistantNodeId = 1;
 
   function ensureFramePacer() {
     const existingPacer = window.__gamerTranslatorFramePacer;
@@ -104,6 +149,137 @@
 
   ensureFramePacer();
 
+  function getDomNodeId(node) {
+    if (!(node instanceof Node)) {
+      return "";
+    }
+
+    const existingId = assistantNodeIds.get(node);
+
+    if (existingId) {
+      return existingId;
+    }
+
+    const createdId = `assistant-node-${nextAssistantNodeId}`;
+    nextAssistantNodeId += 1;
+    assistantNodeIds.set(node, createdId);
+    return createdId;
+  }
+
+  function ensureDomActivityTracker() {
+    const existingTracker = window.__gamerTranslatorDomTracker;
+
+    if (existingTracker && typeof existingTracker.start === "function" && typeof existingTracker.waitForChange === "function") {
+      existingTracker.start();
+      return existingTracker;
+    }
+
+    const state = {
+      observer: null,
+      version: 0,
+      listeners: new Set()
+    };
+
+    const notifyListeners = () => {
+      state.version += 1;
+
+      for (const listener of Array.from(state.listeners)) {
+        try {
+          listener(state.version);
+        } catch (_error) {
+          // A tracker listener hibája nem állíthatja meg a többi figyelést.
+        }
+      }
+    };
+
+    const start = () => {
+      if (state.observer !== null || !(document.documentElement instanceof HTMLElement) || typeof MutationObserver !== "function") {
+        return;
+      }
+
+      state.observer = new MutationObserver((mutations) => {
+        if (!Array.isArray(mutations) || mutations.length === 0) {
+          return;
+        }
+
+        notifyListeners();
+      });
+      state.observer.observe(document.documentElement, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: [
+          "aria-busy",
+          "aria-hidden",
+          "class",
+          "data-message-author-role",
+          "data-state",
+          "data-status",
+          "data-testid",
+          "disabled",
+          "hidden",
+          "title"
+        ]
+      });
+    };
+
+    const stop = () => {
+      if (state.observer === null) {
+        return;
+      }
+
+      state.observer.disconnect();
+      state.observer = null;
+    };
+
+    const waitForChange = (timeoutMs) => new Promise((resolve) => {
+      start();
+
+      if (state.observer === null) {
+        window.setTimeout(() => resolve("timeout"), Math.max(FRAME_INTERVAL_MS, timeoutMs));
+        return;
+      }
+
+      let finished = false;
+      let timeoutId = 0;
+
+      const finish = (reason) => {
+        if (finished) {
+          return;
+        }
+
+        finished = true;
+        state.listeners.delete(handleChange);
+
+        if (timeoutId) {
+          window.clearTimeout(timeoutId);
+        }
+
+        resolve(reason);
+      };
+
+      const handleChange = () => finish("mutation");
+      state.listeners.add(handleChange);
+      timeoutId = window.setTimeout(() => finish("timeout"), Math.max(FRAME_INTERVAL_MS, timeoutMs));
+    });
+
+    const tracker = {
+      start,
+      stop,
+      waitForChange,
+      getVersion() {
+        return state.version;
+      }
+    };
+
+    window.__gamerTranslatorDomTracker = tracker;
+    start();
+    return tracker;
+  }
+
+  ensureDomActivityTracker();
+
   if (typeof window.__gamerTranslatorDeliver === "function") {
     return;
   }
@@ -118,13 +294,12 @@
 
       const assistantSnapshotBeforeSend = payload.copyResponseToClipboard
         ? captureAssistantSnapshot()
-        : { count: 0, lastText: "" };
+        : { count: 0, lastNodeId: "", lastText: "", lastPending: false };
 
       let activeComposer = await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "beviteli mező");
 
       if (payload.imageDataUrl) {
         activeComposer = await attachImage(activeComposer);
-        await maybeDelayLocal(payload.afterAttachDelayMs);
       }
 
       if (payload.prompt) {
@@ -135,7 +310,6 @@
           payload.prompt,
           Math.min(payload.pageReadyTimeoutMs, 1800)
         );
-        await maybeDelayLocal(payload.beforeSubmitDelayMs);
       }
 
       if (payload.autoSubmit) {
@@ -246,14 +420,6 @@
       }
 
       return new File([bytes], filename, { type: mimeType || "image/png" });
-    }
-
-    async function maybeDelayLocal(ms) {
-      const delayMs = Number(ms) || 0;
-
-      if (delayMs > 0) {
-        await wait(delayMs);
-      }
     }
 
     async function submitTextMessage(composer) {
@@ -425,7 +591,13 @@
         return String(element.value || "");
       }
 
-      return String(element.innerText || element.textContent || "");
+      const structuredText = normalizeStructuredDomText(readStructuredDomText(element));
+
+      if (structuredText) {
+        return structuredText;
+      }
+
+      return String(element.textContent || "");
     }
 
     async function waitForPromptApplied(composer, prompt, timeoutMs) {
@@ -452,7 +624,7 @@
           return liveComposer;
         }
 
-        await wait(FRAME_INTERVAL_MS);
+        await waitForNextStateTurn(timeoutMs - (Date.now() - startedAt));
       }
 
       return findComposer() || composer;
@@ -552,7 +724,7 @@
     }
 
     function isComposerElement(element) {
-      if (!(element instanceof HTMLElement) || !isVisible(element)) {
+      if (!(element instanceof HTMLElement) || !isDomAccessibleElement(element)) {
         return false;
       }
 
@@ -568,25 +740,28 @@
         return Number.NEGATIVE_INFINITY;
       }
 
-      const rect = element.getBoundingClientRect();
-      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
       const scope = findComposerScope(element);
+      const form = findClosestForm(element);
       const activeElementBonus = document.activeElement === element ? 240 : 0;
       const promptSelectorBonus = element.id === "prompt-textarea" || element.getAttribute("data-testid") === "prompt-textarea" ? 1600 : 0;
-      const lowerViewportBonus = rect.bottom >= viewportHeight * 0.55 ? 1400 : 0;
-      const lowestPositionBonus = Math.max(0, rect.bottom);
+      const textAreaBonus = element instanceof HTMLTextAreaElement ? 520 : 0;
+      const contentEditableBonus = element.isContentEditable ? 360 : 0;
       const scopeSendButtonBonus = scopeHasLikelyComposerActions(scope) ? 900 : 0;
+      const scopeFileInputBonus = scopeHasLikelyFileInput(scope) ? 280 : 0;
+      const formBonus = form instanceof HTMLFormElement ? 240 : 0;
       const conversationPenalty = element.closest('[data-testid^="conversation-turn-"], article') ? 3200 : 0;
-      const topHalfPenalty = rect.bottom < viewportHeight * 0.45 ? 1800 : 0;
+      const hiddenPenalty = isDomAccessibleElement(element) ? 0 : 2800;
 
       return selectorWeight
         + activeElementBonus
         + promptSelectorBonus
-        + lowerViewportBonus
-        + lowestPositionBonus
+        + textAreaBonus
+        + contentEditableBonus
         + scopeSendButtonBonus
+        + scopeFileInputBonus
+        + formBonus
         - conversationPenalty
-        - topHalfPenalty;
+        - hiddenPenalty;
     }
 
     function scopeHasLikelyComposerActions(scope) {
@@ -603,6 +778,14 @@
         || scope.querySelector('button[title*="küld" i]')
         || scope.querySelector('button[type="submit"]')
       );
+    }
+
+    function scopeHasLikelyFileInput(scope) {
+      if (!(scope instanceof Element)) {
+        return false;
+      }
+
+      return Boolean(scope.querySelector('input[type="file"]'));
     }
 
     function captureComposerAttachmentSnapshot(composer) {
@@ -658,7 +841,7 @@
           }
         }
 
-        await wait(FRAME_INTERVAL_MS);
+        await waitForNextStateTurn(timeoutMs - (Date.now() - startedAt));
       }
 
       return findComposer() || composer;
@@ -749,7 +932,7 @@
       ];
 
       const matches = selectors.flatMap((selector) => Array.from(scope.querySelectorAll(selector)));
-      const uniqueVisibleMatches = Array.from(new Set(matches)).filter((element) => element instanceof Element && isVisible(element));
+      const uniqueVisibleMatches = Array.from(new Set(matches)).filter((element) => isTrackableAttachmentIndicator(element));
 
       return uniqueVisibleMatches.length;
     }
@@ -780,7 +963,7 @@
 
       const pendingNodes = pendingSelectors
         .flatMap((selector) => Array.from(scope.querySelectorAll(selector)))
-        .filter((element) => element instanceof Element && isVisible(element));
+        .filter((element) => isTrackablePendingNode(element));
 
       if (pendingNodes.length > 0) {
         return true;
@@ -856,69 +1039,70 @@
     }
 
     function captureAssistantSnapshot() {
-      const texts = findAssistantMessageNodes()
-        .map((node) => extractAssistantText(node))
-        .map((text) => normalizeWhitespace(text))
-        .filter(Boolean);
+      const assistantEntries = findAssistantMessageNodes()
+        .map((node) => ({
+          nodeId: getDomNodeId(node),
+          text: normalizeWhitespace(extractAssistantText(node)),
+          pending: isAssistantResponsePending(node)
+        }))
+        .filter((entry) => Boolean(entry.text) || entry.pending);
+
+      const lastEntry = assistantEntries.at(-1) || null;
 
       return {
-        count: texts.length,
-        lastText: texts.at(-1) || ""
+        count: assistantEntries.length,
+        lastNodeId: lastEntry?.nodeId || "",
+        lastText: lastEntry?.text || "",
+        lastPending: Boolean(lastEntry?.pending)
       };
     }
 
     async function waitForAssistantResponse(previousSnapshot, timeoutMs) {
+      const domTracker = ensureDomActivityTracker();
       const startedAt = Date.now();
-      let lastCandidate = "";
-      let latestUsableCandidate = "";
-      let stableSince = 0;
 
       while (Date.now() - startedAt < timeoutMs) {
-        const assistantNodes = findAssistantMessageNodes();
-        const latestAssistantNode = assistantNodes.at(-1) || null;
         const currentSnapshot = captureAssistantSnapshot();
         const candidate = currentSnapshot.lastText;
         const hasNewResponse = Boolean(candidate)
-          && (currentSnapshot.count > previousSnapshot.count || candidate !== previousSnapshot.lastText);
+          && (
+            currentSnapshot.count > previousSnapshot.count
+            || currentSnapshot.lastNodeId !== previousSnapshot.lastNodeId
+            || candidate !== previousSnapshot.lastText
+          );
 
         if (hasNewResponse) {
-          if (isTransientAssistantText(candidate) || isAssistantMessageBusy(latestAssistantNode)) {
-            lastCandidate = "";
-            stableSince = 0;
-            await wait(FRAME_INTERVAL_MS);
+          if (isTransientAssistantText(candidate) || currentSnapshot.lastPending) {
+            const remainingBusyTime = timeoutMs - (Date.now() - startedAt);
+
+            if (remainingBusyTime > 0) {
+              await domTracker.waitForChange(Math.min(RESPONSE_CHANGE_WAIT_MS, remainingBusyTime));
+            }
+
             continue;
           }
 
-          latestUsableCandidate = candidate;
-
-          if (candidate !== lastCandidate) {
-            lastCandidate = candidate;
-            stableSince = Date.now();
-          }
-
-          if (!isGenerationInProgress() && hasReadyResponseActions(latestAssistantNode)) {
-            return {
-              text: candidate,
-              copied: false
-            };
-          }
-
-          if (!isGenerationInProgress() && Date.now() - stableSince >= 450) {
-            return {
-              text: candidate,
-              copied: false
-            };
-          }
+          return {
+            text: candidate,
+            copied: false
+          };
         }
 
-        await wait(FRAME_INTERVAL_MS);
+        const remainingTime = timeoutMs - (Date.now() - startedAt);
+
+        if (remainingTime <= 0) {
+          break;
+        }
+
+        await domTracker.waitForChange(Math.min(RESPONSE_CHANGE_WAIT_MS, remainingTime));
       }
 
       const finalSnapshot = captureAssistantSnapshot();
       const finalCandidate = finalSnapshot.lastText;
       const hasFinalResponse = Boolean(finalCandidate)
         && (finalSnapshot.count > previousSnapshot.count || finalCandidate !== previousSnapshot.lastText)
-        && !isTransientAssistantText(finalCandidate);
+        && !isTransientAssistantText(finalCandidate)
+        && !finalSnapshot.lastPending;
 
       if (hasFinalResponse) {
         return {
@@ -927,47 +1111,7 @@
         };
       }
 
-      if (latestUsableCandidate) {
-        return {
-          text: latestUsableCandidate,
-          copied: false
-        };
-      }
-
       throw new Error("A ChatGPT válasza nem érkezett meg időben.");
-    }
-
-    function hasReadyResponseActions(messageElement) {
-      if (!(messageElement instanceof HTMLElement)) {
-        return false;
-      }
-
-      const actionLabels = collectResponseActionLabels(messageElement);
-
-      if (actionLabels.length === 0) {
-        return false;
-      }
-
-      return actionLabels.some((label) => ["like", "dislike", "share", "regenerate", "more", "tetszik", "nem tetszik", "megoszt", "újragenerál", "további"].some((needle) => label.includes(needle)));
-    }
-
-    function collectResponseActionLabels(messageElement) {
-      const scope = messageElement.closest('[data-testid^="conversation-turn-"], article, section, div')
-        || messageElement;
-
-      return Array.from(scope.querySelectorAll("button"))
-        .filter((button) => button instanceof HTMLButtonElement && !button.disabled)
-        .map((button) => [
-          button.getAttribute("aria-label"),
-          button.getAttribute("title"),
-          button.dataset?.testid,
-          button.textContent
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase()
-          .trim())
-        .filter(Boolean);
     }
 
     function isTransientAssistantText(text) {
@@ -999,13 +1143,81 @@
         return true;
       }
 
-      return Boolean(
-        element.querySelector('[aria-busy="true"], [data-state="streaming"], [data-state="thinking"], [data-status="in_progress"]')
-      );
+      return hasPendingResponseSignals(element);
+    }
+
+    function isAssistantResponsePending(element) {
+      if (!(element instanceof HTMLElement)) {
+        return true;
+      }
+
+      if (isAssistantMessageBusy(element)) {
+        return true;
+      }
+
+      const responseScope = findAssistantResponseScope(element);
+      return hasPendingResponseSignals(responseScope);
+    }
+
+    function findAssistantResponseScope(element) {
+      if (!(element instanceof HTMLElement)) {
+        return null;
+      }
+
+      return element.closest('[data-testid^="conversation-turn-"], article, section')
+        || element.closest('[role="presentation"], [role="group"]')
+        || element.parentElement
+        || element;
+    }
+
+    function hasPendingResponseSignals(scope) {
+      if (!(scope instanceof Element)) {
+        return false;
+      }
+
+      const pendingSelectors = [
+        '[aria-busy="true"]',
+        '[role="progressbar"]',
+        '[data-state="streaming"]',
+        '[data-state="thinking"]',
+        '[data-status="in_progress"]',
+        '[data-testid*="stream" i]',
+        '[data-testid*="thinking" i]',
+        '[data-testid*="typing" i]',
+        '[data-testid*="loading" i]',
+        '[class*="streaming"]',
+        '[class*="thinking"]',
+        '[class*="typing"]',
+        '[class*="loading"]',
+        '[class*="progress"]'
+      ];
+
+      if (scope instanceof HTMLElement) {
+        for (const selector of pendingSelectors) {
+          try {
+            if (scope.matches(selector) && isTrackablePendingNode(scope)) {
+              return true;
+            }
+          } catch (_error) {
+            // A selector kompatibilitási hibája miatt nem állhat meg a pending-ellenőrzés.
+          }
+        }
+      }
+
+      return pendingSelectors
+        .flatMap((selector) => Array.from(scope.querySelectorAll(selector)))
+        .some((element) => isTrackablePendingNode(element));
     }
 
     function isGenerationInProgress() {
-      const sendButton = findSendButton(findComposer());
+      const assistantNodes = findAssistantMessageNodes();
+      const latestAssistantNode = assistantNodes.at(-1) || null;
+
+      if (latestAssistantNode instanceof HTMLElement && isAssistantMessageBusy(latestAssistantNode)) {
+        return true;
+      }
+
+      const sendButton = findSendButton(findComposer(), { allowDisabled: true });
 
       if (!sendButton) {
         return false;
@@ -1016,14 +1228,15 @@
 
     function findAssistantMessageNodes() {
       const directMatches = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'))
-        .filter(isVisible);
+        .filter(isDomTrackableElement)
+        .filter((element) => Boolean(normalizeWhitespace(extractAssistantText(element))) || isAssistantMessageBusy(element));
 
       if (directMatches.length > 0) {
         return Array.from(new Set(directMatches));
       }
 
       const fallbackMatches = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"], article'))
-        .filter(isVisible)
+        .filter(isDomTrackableElement)
         .filter((element) => {
           const authorHints = [
             element.getAttribute("data-message-author-role"),
@@ -1045,6 +1258,12 @@
     }
 
     function extractAssistantText(element) {
+      const structuredText = normalizeStructuredDomText(readStructuredDomText(element));
+
+      if (structuredText) {
+        return structuredText;
+      }
+
       const preferredContainers = [
         element.querySelector(".markdown"),
         element.querySelector('[class*="markdown"]'),
@@ -1057,7 +1276,8 @@
           continue;
         }
 
-        const text = normalizeWhitespace(container.innerText || container.textContent);
+        const text = normalizeStructuredDomText(readStructuredDomText(container))
+          || normalizeWhitespace(container.textContent);
 
         if (text) {
           return text;
@@ -1067,10 +1287,165 @@
       return "";
     }
 
+    function isDomTrackableElement(element) {
+      if (!(element instanceof HTMLElement) || !element.isConnected) {
+        return false;
+      }
+
+      if (element.closest("template, script, style, noscript")) {
+        return false;
+      }
+
+      return true;
+    }
+
+    function isSemanticallyHidden(element) {
+      if (!(element instanceof HTMLElement) || !element.isConnected) {
+        return true;
+      }
+
+      if (element.hidden || element.closest("template, script, style, noscript, [hidden]")) {
+        return true;
+      }
+
+      if (element.getAttribute("aria-hidden") === "true" || element.closest('[aria-hidden="true"]')) {
+        return true;
+      }
+
+      const style = window.getComputedStyle(element);
+
+      return style.display === "none" || style.visibility === "hidden";
+    }
+
+    function isDomAccessibleElement(element) {
+      return element instanceof HTMLElement
+        && element.isConnected
+        && !isSemanticallyHidden(element);
+    }
+
+    function isTrackableAttachmentIndicator(element) {
+      if (!(element instanceof HTMLElement) || !isDomAccessibleElement(element)) {
+        return false;
+      }
+
+      if (element instanceof HTMLInputElement && element.type === "file") {
+        return false;
+      }
+
+      if (element instanceof HTMLButtonElement) {
+        return false;
+      }
+
+      return !element.closest("template, script, style, noscript");
+    }
+
+    function isTrackablePendingNode(element) {
+      if (!(element instanceof HTMLElement) || !isDomAccessibleElement(element)) {
+        return false;
+      }
+
+      return !element.closest("template, script, style, noscript");
+    }
+
+    function readStructuredDomText(root) {
+      if (!(root instanceof Node)) {
+        return "";
+      }
+
+      const parts = [];
+
+      const appendText = (text) => {
+        const normalizedText = String(text || "").replace(/\u00a0/g, " ");
+
+        if (!normalizedText) {
+          return;
+        }
+
+        if (parts.length === 0) {
+          parts.push(normalizedText);
+          return;
+        }
+
+        const previousPart = parts[parts.length - 1];
+
+        if (previousPart === "\n" || /^[\s(/{[]*$/.test(previousPart) || /^[,.;:!?%)\]}]/.test(normalizedText)) {
+          parts.push(normalizedText);
+          return;
+        }
+
+        parts.push(" ", normalizedText);
+      };
+
+      const appendBreak = () => {
+        if (parts.length === 0 || parts[parts.length - 1] === "\n") {
+          return;
+        }
+
+        parts.push("\n");
+      };
+
+      const visit = (node) => {
+        if (node instanceof Text) {
+          appendText(node.textContent || "");
+          return;
+        }
+
+        if (!(node instanceof HTMLElement)) {
+          return;
+        }
+
+        const tagName = node.tagName.toUpperCase();
+
+        if (DOM_TEXT_SKIP_TAGS.has(tagName)) {
+          return;
+        }
+
+        if (tagName === "BR") {
+          appendBreak();
+          return;
+        }
+
+        if (node.getAttribute("aria-hidden") === "true" && !node.hasAttribute("data-message-author-role")) {
+          return;
+        }
+
+        const isBlockLike = DOM_TEXT_BLOCK_TAGS.has(tagName);
+
+        if (isBlockLike) {
+          appendBreak();
+        }
+
+        for (const childNode of Array.from(node.childNodes)) {
+          visit(childNode);
+        }
+
+        if (isBlockLike) {
+          appendBreak();
+        }
+      };
+
+      visit(root);
+      return parts.join("");
+    }
+
+    function normalizeStructuredDomText(value) {
+      return String(value || "")
+        .replace(/\r\n?/g, "\n")
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\n[ \t]+/g, "\n")
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    }
+
     function isEligibleSendButton(button, options = {}) {
       const allowDisabled = Boolean(options.allowDisabled);
 
-      if (!(button instanceof HTMLButtonElement) || !isVisible(button) || (button.disabled && !allowDisabled)) {
+      if (!(button instanceof HTMLButtonElement) || !button.isConnected || (button.disabled && !allowDisabled)) {
+        return false;
+      }
+
+      if (!isDomAccessibleElement(button)) {
         return false;
       }
 
@@ -1106,7 +1481,7 @@
             return false;
           }
 
-          return buttonHasExplicitSendIntent(button) || isNearComposer(button, composer);
+          return buttonHasExplicitSendIntent(button) || sharesComposerScope(button, composer) || sharesComposerForm(button, composer);
         });
 
       return pickNearestButton(matches, composer);
@@ -1175,45 +1550,81 @@
         return buttons[0] || null;
       }
 
-      const composerRect = composer.getBoundingClientRect();
+      const composerScope = findComposerScope(composer);
+      const composerForm = findClosestForm(composer);
       const ranked = buttons
         .map((button) => {
-          const rect = button.getBoundingClientRect();
-          const horizontalDistance = Math.abs(rect.left - composerRect.right);
-          const verticalDistance = Math.abs((rect.top + rect.height / 2) - (composerRect.top + composerRect.height / 2));
-          const explicitSendBonus = buttonHasExplicitSendIntent(button) ? -2000 : 0;
-          const sameFormBonus = composer.closest("form") && composer.closest("form") === button.closest("form") ? -500 : 0;
-          const afterComposerBonus = rect.left >= composerRect.left ? -100 : 0;
-          const score = horizontalDistance + verticalDistance + explicitSendBonus + sameFormBonus + afterComposerBonus;
+          const explicitSendBonus = buttonHasExplicitSendIntent(button) ? 4000 : 0;
+          const sameFormBonus = composerForm instanceof HTMLFormElement && composerForm === button.closest("form") ? 2400 : 0;
+          const sameScopeBonus = composerScope instanceof Element && composerScope.contains(button) ? 1400 : 0;
+          const submitTypeBonus = button.type === "submit" ? 500 : 0;
+          const domDistanceBonus = 1200 - Math.min(getDomDistance(composer, button) * 40, 1200);
+          const score = explicitSendBonus + sameFormBonus + sameScopeBonus + submitTypeBonus + domDistanceBonus;
 
           return { button, score };
         })
-        .sort((left, right) => left.score - right.score);
+        .sort((left, right) => right.score - left.score);
 
       return ranked[0]?.button || null;
     }
 
     function isNearComposer(button, composer) {
+      return sharesComposerScope(button, composer) || sharesComposerForm(button, composer);
+    }
+
+    function sharesComposerForm(button, composer) {
       if (!(button instanceof HTMLButtonElement) || !(composer instanceof Element)) {
-        return true;
-      }
-
-      const composerRect = composer.getBoundingClientRect();
-      const rect = button.getBoundingClientRect();
-      const verticalCenterDistance = Math.abs((rect.top + rect.height / 2) - (composerRect.top + composerRect.height / 2));
-      const buttonIsBelowBottom = rect.top > composerRect.bottom + 140;
-      const buttonIsFarLeft = rect.right < composerRect.left - 40;
-      const buttonIsFarRight = rect.left > composerRect.right + 220;
-
-      if (verticalCenterDistance > 140) {
         return false;
       }
 
-      if (buttonIsBelowBottom || buttonIsFarLeft || buttonIsFarRight) {
+      const composerForm = findClosestForm(composer);
+      return composerForm instanceof HTMLFormElement && composerForm === button.closest("form");
+    }
+
+    function sharesComposerScope(button, composer) {
+      if (!(button instanceof HTMLButtonElement) || !(composer instanceof Element)) {
         return false;
       }
 
-      return true;
+      const composerScope = findComposerScope(composer);
+      return composerScope instanceof Element && composerScope.contains(button);
+    }
+
+    function getDomDistance(left, right) {
+      if (!(left instanceof Node) || !(right instanceof Node)) {
+        return Number.MAX_SAFE_INTEGER;
+      }
+
+      if (left === right) {
+        return 0;
+      }
+
+      const leftAncestors = [];
+      let currentLeft = left;
+
+      while (currentLeft) {
+        leftAncestors.push(currentLeft);
+        currentLeft = currentLeft.parentNode;
+      }
+
+      const rightAncestors = [];
+      let currentRight = right;
+
+      while (currentRight) {
+        rightAncestors.push(currentRight);
+        currentRight = currentRight.parentNode;
+      }
+
+      for (let leftIndex = 0; leftIndex < leftAncestors.length; leftIndex += 1) {
+        const leftAncestor = leftAncestors[leftIndex];
+        const rightIndex = rightAncestors.indexOf(leftAncestor);
+
+        if (rightIndex !== -1) {
+          return leftIndex + rightIndex;
+        }
+      }
+
+      return Number.MAX_SAFE_INTEGER;
     }
 
     function readButtonState(button) {
@@ -1236,23 +1647,14 @@
           return value;
         }
 
-        await wait(FRAME_INTERVAL_MS);
+        await waitForNextStateTurn(timeoutMs - (Date.now() - startedAt));
       }
 
       throw new Error(`Nem található: ${label}.`);
     }
 
     function isVisible(element) {
-      const style = window.getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-
-      return (
-        style.display !== "none"
-        && style.visibility !== "hidden"
-        && Number.parseFloat(style.opacity || "1") !== 0
-        && rect.width > 0
-        && rect.height > 0
-      );
+      return isDomAccessibleElement(element);
     }
 
     function normalizeWhitespace(value) {
@@ -1310,7 +1712,7 @@
           return true;
         }
 
-        await wait(FRAME_INTERVAL_MS);
+        await waitForNextStateTurn(timeoutMs - (Date.now() - startedAt));
       }
 
       return false;
@@ -1346,7 +1748,7 @@
           return true;
         }
 
-        await wait(FRAME_INTERVAL_MS);
+        await waitForNextStateTurn(timeoutMs - (Date.now() - startedAt));
       }
 
       return false;
@@ -1422,12 +1824,21 @@
 
       const visibleButtons = Array.from(scope.querySelectorAll("button"))
         .filter((button) => button instanceof HTMLButtonElement)
-        .filter((button) => isVisible(button));
+        .filter((button) => isEligibleSendButton(button, { allowDisabled: true }));
 
       const hasCancel = visibleButtons.some((button) => looksLikeCancelAction(button));
       const hasExplicitSend = visibleButtons.some((button) => buttonHasExplicitSendIntent(button));
 
       return hasCancel && hasExplicitSend;
+    }
+
+    async function waitForNextStateTurn(timeoutMs) {
+      const boundedTimeout = Math.max(FRAME_INTERVAL_MS, Number(timeoutMs) || FRAME_INTERVAL_MS);
+      const domTracker = ensureDomActivityTracker();
+      await Promise.race([
+        wait(FRAME_INTERVAL_MS),
+        domTracker.waitForChange(Math.min(RESPONSE_CHANGE_WAIT_MS, boundedTimeout))
+      ]);
     }
   };
 })();

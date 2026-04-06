@@ -53,10 +53,7 @@ class AppSettings:
     quick_chat_hotkey: str = str(DEFAULT_SETTINGS["quickChatHotkey"])
     overlay_opacity_percent: int = int(DEFAULT_SETTINGS["overlayOpacityPercent"])
     overlay_duration_seconds: int = int(DEFAULT_SETTINGS["overlayDurationSeconds"])
-    page_load_delay_ms: int = int(DEFAULT_SETTINGS["pageLoadDelayMs"])
     page_ready_timeout_ms: int = int(DEFAULT_SETTINGS["pageReadyTimeoutMs"])
-    before_submit_delay_ms: int = int(DEFAULT_SETTINGS["beforeSubmitDelayMs"])
-    after_attach_delay_ms: int = int(DEFAULT_SETTINGS["afterAttachDelayMs"])
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "AppSettings":
@@ -105,10 +102,7 @@ class AppSettings:
             quick_chat_hotkey=quick_chat_hotkey,
             overlay_opacity_percent=coerce_int(raw.get("overlayOpacityPercent"), DEFAULT_SETTINGS["overlayOpacityPercent"]),
             overlay_duration_seconds=coerce_int(raw.get("overlayDurationSeconds"), DEFAULT_SETTINGS["overlayDurationSeconds"]),
-            page_load_delay_ms=coerce_int(raw.get("pageLoadDelayMs"), DEFAULT_SETTINGS["pageLoadDelayMs"]),
             page_ready_timeout_ms=coerce_int(raw.get("pageReadyTimeoutMs"), DEFAULT_SETTINGS["pageReadyTimeoutMs"]),
-            before_submit_delay_ms=coerce_int(raw.get("beforeSubmitDelayMs"), DEFAULT_SETTINGS["beforeSubmitDelayMs"]),
-            after_attach_delay_ms=coerce_int(raw.get("afterAttachDelayMs"), DEFAULT_SETTINGS["afterAttachDelayMs"]),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -130,10 +124,7 @@ class AppSettings:
             "quickChatHotkey": raw["quick_chat_hotkey"],
             "overlayOpacityPercent": raw["overlay_opacity_percent"],
             "overlayDurationSeconds": raw["overlay_duration_seconds"],
-            "pageLoadDelayMs": raw["page_load_delay_ms"],
             "pageReadyTimeoutMs": raw["page_ready_timeout_ms"],
-            "beforeSubmitDelayMs": raw["before_submit_delay_ms"],
-            "afterAttachDelayMs": raw["after_attach_delay_ms"],
         }
 
 

@@ -51,7 +51,6 @@ from .ocr_service import OCRService
 from .settings_store import AppSettings, LastRunStatus, SettingsStore
 
 BROWSER_CONSOLE_DEBUG = os.environ.get("GAMER_TRANSLATOR_DEBUG_BROWSER", "").strip() == "1"
-TARGET_UI_FPS = 50
 UI_FRAME_INTERVAL_MS = 20
 UI_FRAME_INTERVAL_SECONDS = UI_FRAME_INTERVAL_MS / 1000.0
 
@@ -632,11 +631,12 @@ class QuickChatTextEdit(QPlainTextEdit):
 class QuickChatOverlay(QWidget):
     submitted = Signal(str)
     closed = Signal()
+    ACTIVATION_GUARD_SECONDS = 0.45
 
     def __init__(self) -> None:
         super().__init__(
             None,
-            Qt.WindowType.Popup
+            Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint,
         )
@@ -644,6 +644,7 @@ class QuickChatOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._busy = False
+        self._shown_at_monotonic = 0.0
 
         self.background_label = QLabel(self)
         self.background_label.setScaledContents(True)
@@ -806,6 +807,13 @@ class QuickChatOverlay(QWidget):
 
         super().keyPressEvent(event)
 
+    def changeEvent(self, event) -> None:  # type: ignore[override]
+        if event.type() == QEvent.Type.WindowDeactivate and self.isVisible() and not self._busy:
+            if time.monotonic() - self._shown_at_monotonic >= self.ACTIVATION_GUARD_SECONDS:
+                QTimer.singleShot(0, self._hide_if_inactive)
+
+        super().changeEvent(event)
+
     def show_overlay(self, initial_text: str = "") -> None:
         screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
 
@@ -827,6 +835,7 @@ class QuickChatOverlay(QWidget):
         self.setGeometry(geometry)
         self.text_input.setPlainText(initial_text)
         self.set_busy(False)
+        self._shown_at_monotonic = time.monotonic()
         self.show()
         self.raise_()
         self.activateWindow()
@@ -918,6 +927,18 @@ class QuickChatOverlay(QWidget):
         cursor = self.text_input.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
         self.text_input.setTextCursor(cursor)
+
+    def _hide_if_inactive(self) -> None:
+        if not self.isVisible() or self._busy:
+            return
+
+        if self.isActiveWindow():
+            return
+
+        if time.monotonic() - self._shown_at_monotonic < self.ACTIVATION_GUARD_SECONDS:
+            return
+
+        self.hide_overlay()
 
     def _emit_submit(self) -> None:
         if self._busy:
@@ -1144,10 +1165,7 @@ class MainWindow(QMainWindow):
         self.overlay_duration_seconds.setMinimum(1)
         self.overlay_duration_seconds.setSuffix(" mp")
         self.keep_chatgpt_in_background = QCheckBox("A ChatGPT maradjon háttérben, ne kapjon fókuszt")
-        self.page_load_delay_ms = self._build_spin_box()
         self.page_ready_timeout_ms = self._build_spin_box(maximum=120000, step=1000)
-        self.before_submit_delay_ms = self._build_spin_box()
-        self.after_attach_delay_ms = self._build_spin_box()
 
         overlay_opacity_row = QWidget()
         overlay_opacity_layout = QHBoxLayout(overlay_opacity_row)
@@ -2067,7 +2085,6 @@ class MainWindow(QMainWindow):
         try:
             self._ensure_chatgpt_page_loaded(reload_if_open=False)
             self._ensure_automation_ready()
-            self._wait_with_events(self.settings.page_load_delay_ms)
             self._execute_delivery(
                 {
                     "prompt": self.settings.prompt_template.strip(),
@@ -2078,8 +2095,6 @@ class MainWindow(QMainWindow):
                     "copyResponseToClipboard": False,
                     "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
                     "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
-                    "beforeSubmitDelayMs": self.settings.before_submit_delay_ms,
-                    "afterAttachDelayMs": self.settings.after_attach_delay_ms,
                 }
             )
             self._save_last_run_status("A kézi prompt elküldve a ChatGPT-nek.")
@@ -2150,7 +2165,6 @@ class MainWindow(QMainWindow):
             self._show_loading_overlay()
             self._ensure_chatgpt_page_loaded(reload_if_open=False)
             self._ensure_automation_ready()
-            self._wait_with_events(self.settings.page_load_delay_ms)
             delivery_payload, success_status_message, empty_response_status_message = self._build_translation_delivery_payload(payload)
 
             result = self._execute_delivery(delivery_payload)
@@ -2215,8 +2229,6 @@ class MainWindow(QMainWindow):
                     "copyResponseToClipboard": self.settings.copy_response_to_clipboard,
                     "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
                     "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
-                    "beforeSubmitDelayMs": self.settings.before_submit_delay_ms,
-                    "afterAttachDelayMs": self.settings.after_attach_delay_ms,
                 },
                 "A képről kiolvasott szöveg elküldve a ChatGPT-nek.",
                 "A képről kiolvasott szöveg elküldve, de a ChatGPT válasza nem lett kiolvasható.",
@@ -2232,8 +2244,6 @@ class MainWindow(QMainWindow):
                 "copyResponseToClipboard": self.settings.copy_response_to_clipboard,
                 "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
                 "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
-                "beforeSubmitDelayMs": self.settings.before_submit_delay_ms,
-                "afterAttachDelayMs": self.settings.after_attach_delay_ms,
             },
             "A kép elküldve a ChatGPT-nek.",
             "A kép elküldve, de a ChatGPT válasza nem lett kiolvasható.",
@@ -2278,7 +2288,6 @@ class MainWindow(QMainWindow):
             self._save_last_run_status("A gyors chat szöveg elküldése folyamatban.")
             self._ensure_chatgpt_page_loaded(reload_if_open=False)
             self._ensure_automation_ready()
-            self._wait_with_events(self.settings.page_load_delay_ms)
             result = self._execute_delivery(
                 {
                     "prompt": self._build_quick_chat_translation_prompt(cleaned_prompt),
@@ -2289,8 +2298,6 @@ class MainWindow(QMainWindow):
                     "copyResponseToClipboard": True,
                     "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
                     "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
-                    "beforeSubmitDelayMs": self.settings.before_submit_delay_ms,
-                    "afterAttachDelayMs": self.settings.after_attach_delay_ms,
                 }
             )
             translated_text = str(result.get("assistantResponseText") or "").strip()
@@ -2730,10 +2737,7 @@ class MainWindow(QMainWindow):
         self._set_hotkey_value(self.quick_chat_hotkey, settings.quick_chat_hotkey)
         self.overlay_opacity_slider.setValue(settings.overlay_opacity_percent)
         self.overlay_duration_seconds.setValue(settings.overlay_duration_seconds)
-        self.page_load_delay_ms.setValue(settings.page_load_delay_ms)
         self.page_ready_timeout_ms.setValue(settings.page_ready_timeout_ms)
-        self.before_submit_delay_ms.setValue(settings.before_submit_delay_ms)
-        self.after_attach_delay_ms.setValue(settings.after_attach_delay_ms)
 
     def _read_settings_from_form(self) -> AppSettings:
         return AppSettings(
@@ -2753,10 +2757,7 @@ class MainWindow(QMainWindow):
             quick_chat_hotkey=self._read_hotkey_value(self.quick_chat_hotkey, str(DEFAULT_SETTINGS["quickChatHotkey"])),
             overlay_opacity_percent=self.overlay_opacity_slider.value(),
             overlay_duration_seconds=self.overlay_duration_seconds.value(),
-            page_load_delay_ms=self.page_load_delay_ms.value(),
             page_ready_timeout_ms=self.page_ready_timeout_ms.value(),
-            before_submit_delay_ms=self.before_submit_delay_ms.value(),
-            after_attach_delay_ms=self.after_attach_delay_ms.value(),
         )
 
     def _set_drawer_open(self, opened: bool) -> None:
