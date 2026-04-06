@@ -76,6 +76,8 @@ DEFAULT_SETTINGS = {
     "typeOutHotkey": "Alt+V",
     "screenClipHotkeyEnabled": True,
     "screenClipHotkey": "Alt+C",
+    "quickChatHotkeyEnabled": True,
+    "quickChatHotkey": "Alt+X",
     "overlayOpacityPercent": 50,
     "overlayDurationSeconds": 30,
     "pageLoadDelayMs": 0,

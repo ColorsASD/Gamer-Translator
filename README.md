@@ -16,6 +16,7 @@ A Gamer Translator egy önálló Windows asztali alkalmazás, amely a `chatgpt.c
 - az OCR mód alapértelmezetten bekapcsolt
 - a kész fordítás automatikus visszamásolása a vágólapra
 - a mentett fordítás karakterenkénti begépelése gyorsgombbal
+- gyors chat overlay kézi szövegküldéshez
 - szerkeszthető gyorsgombok lenyomásos rögzítéssel
 - tálcaikon dupla kattintásos elrejtéssel és visszahozással
 - háttérben tovább futó ChatGPT oldal lekicsinyítés vagy eltüntetés után is
@@ -28,6 +29,7 @@ A Gamer Translator egy önálló Windows asztali alkalmazás, amely a `chatgpt.c
 
 - `Alt + C`: Windows képkivágó megnyitása
 - `Alt + V`: az utolsó mentett fordítás begépelése
+- `Alt + X`: gyors chat overlay megnyitása
 
 ## Projektstruktúra
 
@@ -63,6 +65,7 @@ Az elkészült egyfájlos program a `dist\Gamer Translator.exe` fájlba kerül.
 6. Ha az app nincs előtérben, a fordítás felül egy overlay blokkban is megjelenik.
 7. A `Szöveg kiolvasása képről` beállítás alapértelmezetten be van kapcsolva. Ilyenkor a program előbb OCR-rel kiolvassa a képen lévő szöveget, és ezt küldi el a ChatGPT-nek.
 8. A kész szöveget illeszd be vágólapról, vagy használd a begépelési gyorsgombot.
+9. Az `Alt + X` gyorsgombbal bármikor megnyitható a gyors chat overlay kézi szövegküldéshez.
 
 ## Fontos beállítások
 

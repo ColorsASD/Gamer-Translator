@@ -586,6 +586,280 @@ class TranslationOverlay(QWidget):
         self.setWindowOpacity(safe_percent / 100.0)
 
 
+class QuickChatTextEdit(QPlainTextEdit):
+    submit_requested = Signal()
+    cancel_requested = Signal()
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if not self.isReadOnly() and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.submit_requested.emit()
+            event.accept()
+            return
+
+        if not self.isReadOnly() and event.key() == Qt.Key.Key_Escape:
+            self.cancel_requested.emit()
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
+
+
+class QuickChatOverlay(QWidget):
+    submitted = Signal(str)
+    closed = Signal()
+
+    def __init__(self) -> None:
+        super().__init__(
+            None,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._busy = False
+
+        self.background_label = QLabel(self)
+        self.background_label.setScaledContents(True)
+        self.background_label.setObjectName("quickChatBackground")
+        self.background_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.background_blur = QGraphicsBlurEffect(self.background_label)
+        self.background_blur.setBlurRadius(26)
+        self.background_label.setGraphicsEffect(self.background_blur)
+
+        self.backdrop = QFrame(self)
+        self.backdrop.setObjectName("quickChatBackdrop")
+        self.backdrop.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(36, 36, 36, 36)
+        root_layout.setSpacing(0)
+        root_layout.addStretch(1)
+
+        self.panel = QFrame(self)
+        self.panel.setObjectName("quickChatPanel")
+        self.panel.setMaximumWidth(860)
+        panel_layout = QVBoxLayout(self.panel)
+        panel_layout.setContentsMargins(28, 24, 28, 24)
+        panel_layout.setSpacing(14)
+
+        self.title_label = QLabel("Gyors chat")
+        self.title_label.setObjectName("quickChatTitle")
+
+        self.hint_label = QLabel("Írd be a fordítandó szöveget. Küldés: Ctrl+Enter, bezárás: Esc")
+        self.hint_label.setObjectName("quickChatHint")
+        self.hint_label.setWordWrap(True)
+
+        self.text_input = QuickChatTextEdit()
+        self.text_input.setObjectName("quickChatInput")
+        self.text_input.setPlaceholderText("Ide írd be a szöveget...")
+        self.text_input.setMinimumHeight(220)
+        self.text_input.submit_requested.connect(self._emit_submit)
+        self.text_input.cancel_requested.connect(self.hide_overlay)
+
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("quickChatStatus")
+        self.status_label.setWordWrap(True)
+        self.status_label.hide()
+
+        button_row_widget = QWidget()
+        button_row_layout = QHBoxLayout(button_row_widget)
+        button_row_layout.setContentsMargins(0, 12, 0, 0)
+        button_row_layout.setSpacing(10)
+        button_row_layout.addStretch(1)
+
+        self.cancel_button = QPushButton("Bezárás")
+        self.cancel_button.clicked.connect(self.hide_overlay)
+
+        self.submit_button = QPushButton("Küldés")
+        self.submit_button.setObjectName("quickChatSubmitButton")
+        self.submit_button.clicked.connect(self._emit_submit)
+
+        button_row_layout.addWidget(self.cancel_button)
+        button_row_layout.addWidget(self.submit_button)
+
+        panel_layout.addWidget(self.title_label)
+        panel_layout.addWidget(self.hint_label)
+        panel_layout.addWidget(self.text_input, 1)
+        panel_layout.addWidget(self.status_label)
+        panel_layout.addWidget(button_row_widget)
+
+        root_layout.addWidget(self.panel, 0, Qt.AlignmentFlag.AlignHCenter)
+        root_layout.addStretch(1)
+
+        self.setStyleSheet(
+            """
+            #quickChatBackdrop {
+                background: rgba(5, 10, 18, 150);
+                border-radius: 0px;
+            }
+            #quickChatPanel {
+                background: rgba(25, 28, 34, 236);
+                border: 1px solid #343842;
+                border-radius: 24px;
+            }
+            #quickChatTitle {
+                font-size: 24px;
+                font-weight: 700;
+                color: #f3f4f6;
+            }
+            #quickChatHint {
+                font-size: 13px;
+                color: #aab3c2;
+            }
+            #quickChatInput {
+                background: rgba(17, 19, 24, 232);
+                color: #f5f5f5;
+                border: 1px solid #3d424d;
+                border-radius: 16px;
+                padding: 14px 16px;
+                selection-background-color: #6b7280;
+                font-size: 15px;
+            }
+            #quickChatStatus {
+                font-size: 13px;
+                color: #d1d5db;
+            }
+            QPushButton {
+                background: #23262b;
+                color: #ececec;
+                border: 1px solid #343842;
+                border-radius: 12px;
+                padding: 9px 14px;
+                font-weight: 600;
+                min-width: 110px;
+            }
+            QPushButton:hover {
+                background: #2c3038;
+                border-color: #4a4f5a;
+            }
+            QPushButton:pressed {
+                background: #1f2125;
+            }
+            #quickChatSubmitButton {
+                background: #5e6673;
+                border: 1px solid #747d8b;
+                color: #ffffff;
+            }
+            #quickChatSubmitButton:hover {
+                background: #6b7482;
+                border-color: #848d9b;
+            }
+            #quickChatSubmitButton:pressed {
+                background: #525966;
+            }
+            """
+        )
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        geometry = self.rect()
+        self.background_label.setGeometry(geometry)
+        self.backdrop.setGeometry(geometry)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self._busy:
+            event.accept()
+            return
+
+        if not self.panel.geometry().contains(event.position().toPoint()):
+            self.hide_overlay()
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if event.key() == Qt.Key.Key_Escape and not self._busy:
+            self.hide_overlay()
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
+
+    def show_overlay(self, initial_text: str = "") -> None:
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+
+        if screen is None:
+            return
+
+        geometry = screen.geometry()
+        background = screen.grabWindow(0, geometry.x(), geometry.y(), geometry.width(), geometry.height())
+
+        if not background.isNull():
+            background = background.scaled(
+                max(320, geometry.width() // 2),
+                max(240, geometry.height() // 2),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+
+        self.background_label.setPixmap(background)
+        self.setGeometry(geometry)
+        self.text_input.setPlainText(initial_text)
+        self.set_busy(False)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.text_input.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        cursor = self.text_input.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.text_input.setTextCursor(cursor)
+
+        if sys.platform == "win32":
+            hwnd = int(self.winId())
+
+            if hwnd != 0:
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0013)
+
+    def hide_overlay(self) -> None:
+        self.set_busy(False)
+
+        if not self.isVisible():
+            return
+
+        self.hide()
+        self.closed.emit()
+
+    def is_busy(self) -> bool:
+        return self._busy
+
+    def set_busy(self, busy: bool, message: str = "") -> None:
+        self._busy = bool(busy)
+        self.text_input.setReadOnly(self._busy)
+        self.submit_button.setEnabled(not self._busy)
+        self.cancel_button.setEnabled(not self._busy)
+        self._set_status(message)
+
+    def show_error(self, message: str) -> None:
+        self.set_busy(False, message)
+        self.text_input.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _set_status(self, message: str) -> None:
+        cleaned_message = str(message or "").strip()
+
+        if not cleaned_message:
+            self.status_label.hide()
+            self.status_label.setText("")
+            return
+
+        self.status_label.setText(cleaned_message)
+        self.status_label.show()
+
+    def _emit_submit(self) -> None:
+        if self._busy:
+            return
+
+        text = self.text_input.toPlainText().strip()
+
+        if not text:
+            self.show_error("Írj be legalább egy sort a gyors chat elküldéséhez.")
+            return
+
+        self.set_busy(True, "Fordítás folyamatban...")
+        self.submitted.emit(text)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -622,6 +896,8 @@ class MainWindow(QMainWindow):
         self.tray_toggle_action: QAction | None = None
         self.browser_background_host = BrowserBackgroundHost()
         self.translation_overlay = TranslationOverlay()
+        self.quick_chat_overlay = QuickChatOverlay()
+        self.quick_chat_overlay.submitted.connect(self._process_quick_chat_translation)
 
         self._build_browser()
         self._build_ui()
@@ -666,6 +942,7 @@ class MainWindow(QMainWindow):
             self.tray_icon.hide()
         self.browser_background_host.close()
         self.translation_overlay.hide()
+        self.quick_chat_overlay.hide()
         super().closeEvent(event)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
@@ -758,6 +1035,8 @@ class MainWindow(QMainWindow):
         self.type_out_hotkey = self._build_hotkey_edit()
         self.screen_clip_hotkey_enabled = QCheckBox("A Windows képkivágó nyíljon meg gyorsbillentyűvel")
         self.screen_clip_hotkey = self._build_hotkey_edit()
+        self.quick_chat_hotkey_enabled = QCheckBox("A gyors chat overlay nyíljon meg gyorsbillentyűvel")
+        self.quick_chat_hotkey = self._build_hotkey_edit()
         self.overlay_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.overlay_opacity_slider.setRange(1, 100)
         self.overlay_opacity_slider.setSingleStep(1)
@@ -791,6 +1070,8 @@ class MainWindow(QMainWindow):
         form_layout.addRow("Képkivágási gyorsbillentyű", self.screen_clip_hotkey)
         form_layout.addRow("", self.type_out_hotkey_enabled)
         form_layout.addRow("Begépelési gyorsbillentyű", self.type_out_hotkey)
+        form_layout.addRow("", self.quick_chat_hotkey_enabled)
+        form_layout.addRow("Gyors chat gyorsbillentyű", self.quick_chat_hotkey)
         form_layout.addRow("", self.keep_chatgpt_in_background)
         form_layout.addRow("Overlay láthatósága", overlay_opacity_row)
         form_layout.addRow("Overlay megjelenési ideje (másodperc)", self.overlay_duration_seconds)
@@ -1690,18 +1971,22 @@ class MainWindow(QMainWindow):
                     self._save_last_run_status(empty_response_status_message)
                     return
 
-                self.last_translated_text = translated_text
-                self.store.save_last_translated_text(translated_text)
-                self.clipboard.setText(translated_text)
-                self._show_translation_overlay(translated_text)
-                self._play_ready_sound()
+                self._store_translation_result(
+                    translated_text,
+                    copy_to_clipboard=True,
+                    show_overlay=True,
+                    play_sound=True,
+                )
                 self._save_last_run_status(f"A fordítás a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {self.settings.type_out_hotkey}")
                 return
 
             if translated_text:
-                self.last_translated_text = translated_text
-                self.store.save_last_translated_text(translated_text)
-                self._show_translation_overlay(translated_text)
+                self._store_translation_result(
+                    translated_text,
+                    copy_to_clipboard=False,
+                    show_overlay=True,
+                    play_sound=False,
+                )
             else:
                 self._hide_translation_overlay()
 
@@ -1768,6 +2053,93 @@ class MainWindow(QMainWindow):
             for index, candidate in enumerate(extracted_text_candidates, start=1)
         )
         return f"OCR candidates from the same image:\n\n{numbered_candidates}"
+
+    def _process_quick_chat_translation(self, prompt_text: str) -> None:
+        cleaned_prompt = str(prompt_text or "").strip()
+        self.settings = self._read_settings_from_form()
+
+        if not cleaned_prompt:
+            self.quick_chat_overlay.show_error("Írj be legalább egy sort a gyors chat elküldéséhez.")
+            return
+
+        if not self.settings.monitoring_enabled:
+            message = "A program nincs aktív állapotban, ezért a gyors chat nem küldhető el."
+            self._save_last_run_status(message)
+            self.quick_chat_overlay.show_error(message)
+            return
+
+        if self.clipboard_translation_in_progress or self.browser_interaction_active:
+            message = "Már fut egy másik ChatGPT művelet, várd meg amíg befejeződik."
+            self._set_live_status(message)
+            self.quick_chat_overlay.show_error(message)
+            return
+
+        self._begin_browser_interaction()
+        self.quick_chat_overlay.hide_overlay()
+        self._show_loading_overlay()
+
+        try:
+            self._save_last_run_status("A gyors chat szöveg elküldése folyamatban.")
+            self._ensure_chatgpt_page_loaded(reload_if_open=False)
+            self._ensure_automation_ready()
+            self._wait_with_events(self.settings.page_load_delay_ms)
+            result = self._execute_delivery(
+                {
+                    "prompt": cleaned_prompt,
+                    "imageDataUrl": "",
+                    "imageMimeType": "",
+                    "imageFilename": "",
+                    "autoSubmit": True,
+                    "copyResponseToClipboard": True,
+                    "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
+                    "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
+                    "beforeSubmitDelayMs": self.settings.before_submit_delay_ms,
+                    "afterAttachDelayMs": self.settings.after_attach_delay_ms,
+                }
+            )
+            translated_text = str(result.get("assistantResponseText") or "").strip()
+
+            if not translated_text:
+                message = "A gyors chat üzenet elküldve, de a ChatGPT válasza nem lett kiolvasható."
+                self._save_last_run_status(message)
+                self.quick_chat_overlay.show_error(message)
+                return
+
+            self._store_translation_result(
+                translated_text,
+                copy_to_clipboard=True,
+                show_overlay=False,
+                play_sound=True,
+            )
+            self._hide_translation_overlay()
+            self._save_last_run_status(
+                f"A gyors chat fordítása a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {self.settings.type_out_hotkey}"
+            )
+        except Exception as error:  # noqa: BLE001
+            self._hide_translation_overlay()
+            self._save_last_run_status(str(error))
+        finally:
+            self._end_browser_interaction()
+
+    def _store_translation_result(
+        self,
+        translated_text: str,
+        *,
+        copy_to_clipboard: bool,
+        show_overlay: bool,
+        play_sound: bool,
+    ) -> None:
+        self.last_translated_text = translated_text
+        self.store.save_last_translated_text(translated_text)
+
+        if copy_to_clipboard:
+            self.clipboard.setText(translated_text)
+
+        if show_overlay:
+            self._show_translation_overlay(translated_text)
+
+        if play_sound:
+            self._play_ready_sound()
 
     def _play_ready_sound(self) -> None:
         try:
@@ -1871,6 +2243,7 @@ class MainWindow(QMainWindow):
             self.hotkey_errors = {
                 "type_out": "A gyorsbillentyűk csak Windowson érhetők el.",
                 "screen_clip": "A gyorsbillentyűk csak Windowson érhetők el.",
+                "quick_chat": "A gyorsbillentyűk csak Windowson érhetők el.",
             }
             return
 
@@ -1881,10 +2254,12 @@ class MainWindow(QMainWindow):
         hotkey_labels = {
             "type_out": "Begépelési gyorsbillentyű",
             "screen_clip": "Képkivágási gyorsbillentyű",
+            "quick_chat": "Gyors chat gyorsbillentyű",
         }
         hotkey_values = {
             "type_out": (self.settings.type_out_hotkey_enabled, self.settings.type_out_hotkey),
             "screen_clip": (self.settings.screen_clip_hotkey_enabled, self.settings.screen_clip_hotkey),
+            "quick_chat": (self.settings.quick_chat_hotkey_enabled, self.settings.quick_chat_hotkey),
         }
 
         self.hotkey_errors = {}
@@ -1907,8 +2282,10 @@ class MainWindow(QMainWindow):
             if len(actions) < 2:
                 continue
 
+            duplicate_hotkey_labels = ", ".join(hotkey_labels[action] for action in actions)
+
             for action in actions:
-                self.hotkey_errors[action] = "A képkivágási és a begépelési gyorsbillentyű nem lehet ugyanaz."
+                self.hotkey_errors[action] = f"Ütközés: {duplicate_hotkey_labels} nem lehet ugyanaz."
 
         self.registered_hotkeys = {
             action: hotkey for action, hotkey in configured_hotkeys.items() if action not in self.hotkey_errors
@@ -2015,6 +2392,10 @@ class MainWindow(QMainWindow):
             self._trigger_screen_clip_hotkey()
             return
 
+        if action == "quick_chat":
+            self._trigger_quick_chat_hotkey()
+            return
+
     def _current_modifiers_match(self, modifiers: int) -> bool:
         if sys.platform != "win32":
             return False
@@ -2067,6 +2448,26 @@ class MainWindow(QMainWindow):
         except OSError as error:
             self._set_live_status(f"A képkivágó nem indítható el: {error}")
 
+    def _trigger_quick_chat_hotkey(self) -> None:
+        if self.hotkey_errors.get("quick_chat"):
+            self._set_live_status(self.hotkey_errors["quick_chat"])
+            return
+
+        if self.browser_interaction_active or self.clipboard_translation_in_progress:
+            self._set_live_status("Már fut egy másik ChatGPT művelet, várd meg amíg befejeződik.")
+            return
+
+        if self.quick_chat_overlay.isVisible():
+            self._wait_for_modifier_release()
+            self.quick_chat_overlay.hide_overlay()
+            self._set_live_status("A gyors chat overlay bezárva.")
+            return
+
+        self._hide_translation_overlay()
+        self._wait_for_modifier_release()
+        self.quick_chat_overlay.show_overlay()
+        self._set_live_status(f"A gyors chat overlay megnyitva: {self.settings.quick_chat_hotkey}")
+
     def _wait_for_modifier_release(self) -> bool:
         if sys.platform != "win32":
             return False
@@ -2104,9 +2505,11 @@ class MainWindow(QMainWindow):
         self.webview_gpu_acceleration_enabled.setChecked(settings.webview_gpu_acceleration_enabled)
         self.type_out_hotkey_enabled.setChecked(settings.type_out_hotkey_enabled)
         self.screen_clip_hotkey_enabled.setChecked(settings.screen_clip_hotkey_enabled)
+        self.quick_chat_hotkey_enabled.setChecked(settings.quick_chat_hotkey_enabled)
         self.keep_chatgpt_in_background.setChecked(settings.keep_chatgpt_in_background)
         self._set_hotkey_value(self.screen_clip_hotkey, settings.screen_clip_hotkey)
         self._set_hotkey_value(self.type_out_hotkey, settings.type_out_hotkey)
+        self._set_hotkey_value(self.quick_chat_hotkey, settings.quick_chat_hotkey)
         self.overlay_opacity_slider.setValue(settings.overlay_opacity_percent)
         self.overlay_duration_seconds.setValue(settings.overlay_duration_seconds)
         self.page_load_delay_ms.setValue(settings.page_load_delay_ms)
@@ -2128,6 +2531,8 @@ class MainWindow(QMainWindow):
             type_out_hotkey=self._read_hotkey_value(self.type_out_hotkey, str(DEFAULT_SETTINGS["typeOutHotkey"])),
             screen_clip_hotkey_enabled=self.screen_clip_hotkey_enabled.isChecked(),
             screen_clip_hotkey=self._read_hotkey_value(self.screen_clip_hotkey, str(DEFAULT_SETTINGS["screenClipHotkey"])),
+            quick_chat_hotkey_enabled=self.quick_chat_hotkey_enabled.isChecked(),
+            quick_chat_hotkey=self._read_hotkey_value(self.quick_chat_hotkey, str(DEFAULT_SETTINGS["quickChatHotkey"])),
             overlay_opacity_percent=self.overlay_opacity_slider.value(),
             overlay_duration_seconds=self.overlay_duration_seconds.value(),
             page_load_delay_ms=self.page_load_delay_ms.value(),
