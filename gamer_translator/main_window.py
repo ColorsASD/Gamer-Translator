@@ -51,9 +51,6 @@ from .ocr_service import OCRService
 from .settings_store import AppSettings, LastRunStatus, SettingsStore
 
 BROWSER_CONSOLE_DEBUG = os.environ.get("GAMER_TRANSLATOR_DEBUG_BROWSER", "").strip() == "1"
-IDLE_CHAT_KEEPALIVE_INTERVAL_MS = 120000
-IDLE_CHAT_KEEPALIVE_CHECK_INTERVAL_MS = 10000
-IDLE_CHAT_KEEPALIVE_RESPONSE_TIMEOUT_MS = 30000
 TARGET_UI_FPS = 50
 UI_FRAME_INTERVAL_MS = 20
 UI_FRAME_INTERVAL_SECONDS = UI_FRAME_INTERVAL_MS / 1000.0
@@ -970,8 +967,6 @@ class MainWindow(QMainWindow):
         self.browser_interaction_active = False
         self.frame_pulse_state = False
         self.browser_keepalive_failures = 0
-        self.last_chat_activity_at = time.monotonic()
-        self.idle_chat_keepalive_in_progress = False
         self.tray_icon: QSystemTrayIcon | None = None
         self.tray_toggle_action: QAction | None = None
         self.browser_background_host = BrowserBackgroundHost()
@@ -988,11 +983,6 @@ class MainWindow(QMainWindow):
         self.system_keepawake_timer.setInterval(50000)
         self.system_keepawake_timer.timeout.connect(self._refresh_system_keep_awake)
         self.system_keepawake_timer.start()
-
-        self.chat_idle_keepalive_timer = QTimer(self)
-        self.chat_idle_keepalive_timer.setInterval(IDLE_CHAT_KEEPALIVE_CHECK_INTERVAL_MS)
-        self.chat_idle_keepalive_timer.timeout.connect(self._perform_idle_chat_keepalive)
-        self.chat_idle_keepalive_timer.start()
 
         self._build_browser()
         self.browser_refresh_timer = QTimer(self)
@@ -1757,70 +1747,6 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             return
 
-    def _mark_chat_activity(self) -> None:
-        self.last_chat_activity_at = time.monotonic()
-
-    def _is_idle_chat_keepalive_due(self) -> bool:
-        return ((time.monotonic() - self.last_chat_activity_at) * 1000) >= IDLE_CHAT_KEEPALIVE_INTERVAL_MS
-
-    def _should_run_idle_chat_keepalive(self) -> bool:
-        if not hasattr(self, "browser"):
-            return False
-
-        if self.idle_chat_keepalive_in_progress or not self._is_idle_chat_keepalive_due():
-            return False
-
-        if self.page_loading or self.browser_interaction_active or self.clipboard_translation_in_progress:
-            return False
-
-        if self.quick_chat_overlay.isVisible():
-            return False
-
-        if not self.settings.monitoring_enabled:
-            return False
-
-        window_visible = self.isVisible() and not self.isMinimized()
-
-        if not window_visible and not self.settings.keep_chatgpt_in_background:
-            return False
-
-        return self._is_chatgpt_url(self.browser.url().toString().strip())
-
-    def _perform_idle_chat_keepalive(self) -> None:
-        if not self._should_run_idle_chat_keepalive():
-            return
-
-        self.idle_chat_keepalive_in_progress = True
-        self._begin_browser_interaction()
-
-        try:
-            self._ensure_chatgpt_page_loaded(reload_if_open=False)
-            self._ensure_automation_ready()
-            self._wait_with_events(self.settings.page_load_delay_ms)
-            result = self._execute_delivery(
-                {
-                    "prompt": self._build_background_keepalive_prompt(),
-                    "imageDataUrl": "",
-                    "imageMimeType": "",
-                    "imageFilename": "",
-                    "autoSubmit": True,
-                    "copyResponseToClipboard": False,
-                    "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
-                    "responseTimeoutMs": IDLE_CHAT_KEEPALIVE_RESPONSE_TIMEOUT_MS,
-                    "beforeSubmitDelayMs": self.settings.before_submit_delay_ms,
-                    "afterAttachDelayMs": self.settings.after_attach_delay_ms,
-                }
-            )
-            assistant_response = str(result.get("assistantResponseText") or "").strip()
-
-            if not assistant_response:
-                self.automation_ready = False
-        except Exception:  # noqa: BLE001
-            self.automation_ready = False
-        finally:
-            self._end_browser_interaction()
-            self.idle_chat_keepalive_in_progress = False
-
     def _build_tray_icon(self) -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
@@ -2324,14 +2250,6 @@ class MainWindow(QMainWindow):
         cleaned_text = str(text or "").strip()
         return f"Quick chat text to translate:\n\n{cleaned_text}"
 
-    def _build_background_keepalive_prompt(self) -> str:
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        return (
-            "Background keepalive ping:\n\n"
-            f"Automatic idle keepalive check at {timestamp}. "
-            "No translation or action is requested. Reply only with: OK"
-        )
-
     def _process_quick_chat_translation(self, prompt_text: str) -> None:
         cleaned_prompt = str(prompt_text or "").strip()
         self.settings = self._read_settings_from_form()
@@ -2529,14 +2447,12 @@ class MainWindow(QMainWindow):
             self.browser_background_host.update()
 
     def _begin_browser_interaction(self) -> None:
-        self._mark_chat_activity()
         self.browser_interaction_active = True
         self._sync_browser_host_mode()
         self._sync_browser_runtime_state()
 
     def _end_browser_interaction(self) -> None:
         self.browser_interaction_active = False
-        self._mark_chat_activity()
         self._sync_browser_host_mode()
         self._sync_browser_runtime_state()
 
