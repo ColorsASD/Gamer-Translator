@@ -2101,17 +2101,16 @@ class MainWindow(QMainWindow):
 
             if not translated_text:
                 message = "A gyors chat üzenet elküldve, de a ChatGPT válasza nem lett kiolvasható."
+                self._hide_translation_overlay()
                 self._save_last_run_status(message)
-                self.quick_chat_overlay.show_error(message)
                 return
 
             self._store_translation_result(
                 translated_text,
                 copy_to_clipboard=True,
-                show_overlay=False,
+                show_overlay=True,
                 play_sound=True,
             )
-            self._hide_translation_overlay()
             self._save_last_run_status(
                 f"A gyors chat fordítása a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {self.settings.type_out_hotkey}"
             )
