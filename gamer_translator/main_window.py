@@ -64,6 +64,9 @@ if sys.platform == "win32":
     MOD_CONTROL = 0x0002
     MOD_SHIFT = 0x0004
     MOD_WIN = 0x0008
+    SWP_NOSIZE = 0x0001
+    SWP_NOMOVE = 0x0002
+    SWP_NOACTIVATE = 0x0010
     INPUT_KEYBOARD = 1
     KEYEVENTF_EXTENDEDKEY = 0x0001
     KEYEVENTF_KEYUP = 0x0002
@@ -195,10 +198,22 @@ if sys.platform == "win32":
         wintypes.UINT,
     )
     user32.SetWindowPos.restype = wintypes.BOOL
+    user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.GetForegroundWindow.argtypes = ()
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.AttachThreadInput.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.BOOL)
+    user32.AttachThreadInput.restype = wintypes.BOOL
+    user32.BringWindowToTop.argtypes = (wintypes.HWND,)
+    user32.BringWindowToTop.restype = wintypes.BOOL
     dwmapi.DwmSetWindowAttribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
     dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
     kernel32.GetCurrentThread.argtypes = ()
     kernel32.GetCurrentThread.restype = wintypes.HANDLE
+    kernel32.GetCurrentThreadId.argtypes = ()
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     kernel32.GetThreadPriority.argtypes = (wintypes.HANDLE,)
     kernel32.GetThreadPriority.restype = ctypes.c_int
     kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
@@ -564,7 +579,7 @@ class TranslationOverlay(QWidget):
             hwnd = int(self.winId())
 
             if hwnd != 0:
-                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0013)
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
 
         self.hide_timer.stop()
 
@@ -611,12 +626,13 @@ class QuickChatOverlay(QWidget):
     def __init__(self) -> None:
         super().__init__(
             None,
-            Qt.WindowType.Tool
+            Qt.WindowType.Popup
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint,
         )
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._busy = False
 
         self.background_label = QLabel(self)
@@ -750,6 +766,9 @@ class QuickChatOverlay(QWidget):
             }
             """
         )
+        self.background_label.lower()
+        self.backdrop.lower()
+        self.panel.raise_()
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -801,16 +820,52 @@ class QuickChatOverlay(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
-        self.text_input.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
-        cursor = self.text_input.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        self.text_input.setTextCursor(cursor)
+
+        window_handle = self.windowHandle()
+
+        if window_handle is not None:
+            window_handle.requestActivate()
+
+        self._focus_text_input()
+        QTimer.singleShot(0, self._focus_text_input)
+        QTimer.singleShot(40, self._focus_text_input)
 
         if sys.platform == "win32":
-            hwnd = int(self.winId())
+            QTimer.singleShot(0, self._force_foreground_activation)
 
-            if hwnd != 0:
-                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0013)
+    def _force_foreground_activation(self) -> None:
+        if sys.platform != "win32":
+            self.raise_()
+            self.activateWindow()
+            return
+
+        hwnd = int(self.winId())
+
+        if hwnd == 0:
+            return
+
+        self.raise_()
+        self.activateWindow()
+        window_handle = self.windowHandle()
+
+        if window_handle is not None:
+            window_handle.requestActivate()
+
+        foreground_hwnd = user32.GetForegroundWindow()
+        foreground_thread_id = user32.GetWindowThreadProcessId(foreground_hwnd, None) if foreground_hwnd else 0
+        current_thread_id = kernel32.GetCurrentThreadId()
+        attached = False
+
+        if foreground_thread_id and foreground_thread_id != current_thread_id:
+            attached = bool(user32.AttachThreadInput(foreground_thread_id, current_thread_id, True))
+
+        try:
+            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE)
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(foreground_thread_id, current_thread_id, False)
 
     def hide_overlay(self) -> None:
         self.set_busy(False)
@@ -845,6 +900,14 @@ class QuickChatOverlay(QWidget):
 
         self.status_label.setText(cleaned_message)
         self.status_label.show()
+
+    def _focus_text_input(self) -> None:
+        self.raise_()
+        self.activateWindow()
+        self.text_input.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        cursor = self.text_input.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.text_input.setTextCursor(cursor)
 
     def _emit_submit(self) -> None:
         if self._busy:
@@ -2054,6 +2117,10 @@ class MainWindow(QMainWindow):
         )
         return f"OCR candidates from the same image:\n\n{numbered_candidates}"
 
+    def _build_quick_chat_translation_prompt(self, text: str) -> str:
+        cleaned_text = str(text or "").strip()
+        return f"Quick chat text to translate:\n\n{cleaned_text}"
+
     def _process_quick_chat_translation(self, prompt_text: str) -> None:
         cleaned_prompt = str(prompt_text or "").strip()
         self.settings = self._read_settings_from_form()
@@ -2085,7 +2152,7 @@ class MainWindow(QMainWindow):
             self._wait_with_events(self.settings.page_load_delay_ms)
             result = self._execute_delivery(
                 {
-                    "prompt": cleaned_prompt,
+                    "prompt": self._build_quick_chat_translation_prompt(cleaned_prompt),
                     "imageDataUrl": "",
                     "imageMimeType": "",
                     "imageFilename": "",
