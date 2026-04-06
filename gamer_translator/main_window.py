@@ -50,6 +50,11 @@ from .defaults import APP_NAME, CHATGPT_HOSTS, CHATGPT_URL, DEFAULT_RESPONSE_TIM
 from .ocr_service import OCRService
 from .settings_store import AppSettings, LastRunStatus, SettingsStore
 
+BROWSER_CONSOLE_DEBUG = os.environ.get("GAMER_TRANSLATOR_DEBUG_BROWSER", "").strip() == "1"
+IDLE_CHAT_KEEPALIVE_INTERVAL_MS = 120000
+IDLE_CHAT_KEEPALIVE_CHECK_INTERVAL_MS = 10000
+IDLE_CHAT_KEEPALIVE_RESPONSE_TIMEOUT_MS = 30000
+
 if sys.platform == "win32":
     from ctypes import wintypes
 
@@ -67,6 +72,8 @@ if sys.platform == "win32":
     SWP_NOSIZE = 0x0001
     SWP_NOMOVE = 0x0002
     SWP_NOACTIVATE = 0x0010
+    ES_SYSTEM_REQUIRED = 0x00000001
+    ES_CONTINUOUS = 0x80000000
     INPUT_KEYBOARD = 1
     KEYEVENTF_EXTENDEDKEY = 0x0001
     KEYEVENTF_KEYUP = 0x0002
@@ -218,6 +225,8 @@ if sys.platform == "win32":
     kernel32.GetThreadPriority.restype = ctypes.c_int
     kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
     kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+    kernel32.SetThreadExecutionState.argtypes = (wintypes.ULONG,)
+    kernel32.SetThreadExecutionState.restype = wintypes.ULONG
     kernel32.SetThreadPriority.argtypes = (wintypes.HANDLE, ctypes.c_int)
     kernel32.SetThreadPriority.restype = wintypes.BOOL
 
@@ -413,7 +422,8 @@ class BrowserPage(QWebEnginePage):
         line_number: int,
         source_id: str,
     ) -> None:
-        print(f"[browser:{level.name}] {source_id}:{line_number} {message}")
+        if BROWSER_CONSOLE_DEBUG:
+            print(f"[browser:{level.name}] {source_id}:{line_number} {message}")
 
 
 class DrawerBackdrop(QWidget):
@@ -955,12 +965,30 @@ class MainWindow(QMainWindow):
         self.tray_message_shown = False
         self.browser_background_mode = False
         self.browser_interaction_active = False
+        self.browser_keepalive_failures = 0
+        self.last_chat_activity_at = time.monotonic()
+        self.idle_chat_keepalive_in_progress = False
         self.tray_icon: QSystemTrayIcon | None = None
         self.tray_toggle_action: QAction | None = None
         self.browser_background_host = BrowserBackgroundHost()
         self.translation_overlay = TranslationOverlay()
         self.quick_chat_overlay = QuickChatOverlay()
         self.quick_chat_overlay.submitted.connect(self._process_quick_chat_translation)
+
+        self.browser_keepalive_timer = QTimer(self)
+        self.browser_keepalive_timer.setInterval(45000)
+        self.browser_keepalive_timer.timeout.connect(self._perform_browser_keepalive)
+        self.browser_keepalive_timer.start()
+
+        self.system_keepawake_timer = QTimer(self)
+        self.system_keepawake_timer.setInterval(50000)
+        self.system_keepawake_timer.timeout.connect(self._refresh_system_keep_awake)
+        self.system_keepawake_timer.start()
+
+        self.chat_idle_keepalive_timer = QTimer(self)
+        self.chat_idle_keepalive_timer.setInterval(IDLE_CHAT_KEEPALIVE_CHECK_INTERVAL_MS)
+        self.chat_idle_keepalive_timer.timeout.connect(self._perform_idle_chat_keepalive)
+        self.chat_idle_keepalive_timer.start()
 
         self._build_browser()
         self._build_ui()
@@ -990,6 +1018,7 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(0, self._register_hotkeys)
         QTimer.singleShot(0, self.open_chatgpt)
+        QTimer.singleShot(0, self._refresh_system_keep_awake)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self.exit_requested and self.tray_icon is not None and self.tray_icon.isVisible():
@@ -1000,6 +1029,7 @@ class MainWindow(QMainWindow):
         self.store.save_settings(self._read_settings_from_form())
         self._unregister_hotkeys()
         self._uninstall_keyboard_hook()
+        self._restore_system_sleep_state()
         self.background_executor.shutdown(wait=False, cancel_futures=True)
         if self.tray_icon is not None:
             self.tray_icon.hide()
@@ -1066,6 +1096,8 @@ class MainWindow(QMainWindow):
     def _build_browser(self) -> None:
         self.profile = QWebEngineProfile(APP_NAME, self)
         self.profile.setCachePath(str(self.store.browser_dir / "cache"))
+        self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
+        self.profile.setHttpCacheMaximumSize(512 * 1024 * 1024)
         self.profile.setPersistentStoragePath(str(self.store.browser_dir / "storage"))
         self.profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
 
@@ -1082,7 +1114,9 @@ class MainWindow(QMainWindow):
         self._set_web_attribute(browser_settings, "LocalStorageEnabled", True)
         self._set_web_attribute(browser_settings, "JavascriptCanAccessClipboard", True)
         self._set_web_attribute(browser_settings, "JavascriptCanPaste", True)
-        self._set_web_attribute(browser_settings, "ScrollAnimatorEnabled", True)
+        self._set_web_attribute(browser_settings, "Accelerated2dCanvasEnabled", True)
+        self._set_web_attribute(browser_settings, "WebGLEnabled", True)
+        self._set_web_attribute(browser_settings, "ScrollAnimatorEnabled", False)
         self._set_web_attribute(browser_settings, "FullScreenSupportEnabled", True)
 
     def _build_ui(self) -> None:
@@ -1594,7 +1628,13 @@ class MainWindow(QMainWindow):
         background_interaction_active = self.browser_background_mode and (
             self.browser_interaction_active or self.page_loading or self.clipboard_translation_in_progress
         )
-        should_render_page = visible_main_window_render or background_interaction_active
+        background_keepalive_active = (
+            self.browser_background_mode
+            and self._is_window_hidden_for_tray()
+            and self.settings.keep_chatgpt_in_background
+            and self.settings.monitoring_enabled
+        )
+        should_render_page = visible_main_window_render or background_interaction_active or background_keepalive_active
         frozen_state = getattr(QWebEnginePage.LifecycleState, "Frozen", QWebEnginePage.LifecycleState.Active)
 
         try:
@@ -1619,6 +1659,151 @@ class MainWindow(QMainWindow):
             return
         finally:
             self._sync_browser_placeholder()
+
+    def _should_keep_system_awake(self) -> bool:
+        return self.settings.monitoring_enabled
+
+    def _refresh_system_keep_awake(self) -> None:
+        if sys.platform != "win32":
+            return
+
+        execution_state = ES_CONTINUOUS | ES_SYSTEM_REQUIRED if self._should_keep_system_awake() else ES_CONTINUOUS
+
+        try:
+            kernel32.SetThreadExecutionState(execution_state)
+        except Exception:  # noqa: BLE001
+            return
+
+    def _restore_system_sleep_state(self) -> None:
+        if sys.platform != "win32":
+            return
+
+        try:
+            kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+        except Exception:  # noqa: BLE001
+            return
+
+    def _should_run_browser_keepalive(self) -> bool:
+        if not hasattr(self, "browser"):
+            return False
+
+        if self.page_loading or self.browser_interaction_active or self.clipboard_translation_in_progress:
+            return False
+
+        if not self.settings.monitoring_enabled or not self.settings.keep_chatgpt_in_background:
+            return False
+
+        if not (self.browser_background_mode or self._is_window_hidden_for_tray()):
+            return False
+
+        return self._is_chatgpt_url(self.browser.url().toString().strip())
+
+    def _perform_browser_keepalive(self) -> None:
+        if not self._should_run_browser_keepalive():
+            self.browser_keepalive_failures = 0
+            return
+
+        self._sync_browser_host_mode()
+        self._sync_browser_runtime_state()
+
+        try:
+            keepalive_result = self._run_javascript(
+                """
+                    (() => ({
+                      readyState: document.readyState,
+                      visibilityState: document.visibilityState,
+                      hasAutomation: typeof window.__gamerTranslatorDeliver === "function",
+                      keepAliveAt: Date.now()
+                    }))()
+                """,
+                timeout_ms=4000,
+            )
+        except RuntimeError:
+            self.browser_keepalive_failures += 1
+
+            if self.browser_keepalive_failures >= 2 and not self.page_loading:
+                self.browser_keepalive_failures = 0
+                self.automation_ready = False
+                self._set_live_status("A ChatGPT oldal felébresztése miatt újratöltés történt.")
+                self.browser.reload()
+
+            return
+
+        self.browser_keepalive_failures = 0
+
+        if isinstance(keepalive_result, dict) and keepalive_result.get("hasAutomation") is True:
+            return
+
+        self.automation_ready = False
+
+        try:
+            self._ensure_automation_ready()
+        except RuntimeError:
+            return
+
+    def _mark_chat_activity(self) -> None:
+        self.last_chat_activity_at = time.monotonic()
+
+    def _is_idle_chat_keepalive_due(self) -> bool:
+        return ((time.monotonic() - self.last_chat_activity_at) * 1000) >= IDLE_CHAT_KEEPALIVE_INTERVAL_MS
+
+    def _should_run_idle_chat_keepalive(self) -> bool:
+        if not hasattr(self, "browser"):
+            return False
+
+        if self.idle_chat_keepalive_in_progress or not self._is_idle_chat_keepalive_due():
+            return False
+
+        if self.page_loading or self.browser_interaction_active or self.clipboard_translation_in_progress:
+            return False
+
+        if self.quick_chat_overlay.isVisible():
+            return False
+
+        if not self.settings.monitoring_enabled:
+            return False
+
+        window_visible = self.isVisible() and not self.isMinimized()
+
+        if not window_visible and not self.settings.keep_chatgpt_in_background:
+            return False
+
+        return self._is_chatgpt_url(self.browser.url().toString().strip())
+
+    def _perform_idle_chat_keepalive(self) -> None:
+        if not self._should_run_idle_chat_keepalive():
+            return
+
+        self.idle_chat_keepalive_in_progress = True
+        self._begin_browser_interaction()
+
+        try:
+            self._ensure_chatgpt_page_loaded(reload_if_open=False)
+            self._ensure_automation_ready()
+            self._wait_with_events(self.settings.page_load_delay_ms)
+            result = self._execute_delivery(
+                {
+                    "prompt": self._build_background_keepalive_prompt(),
+                    "imageDataUrl": "",
+                    "imageMimeType": "",
+                    "imageFilename": "",
+                    "autoSubmit": True,
+                    "copyResponseToClipboard": False,
+                    "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
+                    "responseTimeoutMs": IDLE_CHAT_KEEPALIVE_RESPONSE_TIMEOUT_MS,
+                    "beforeSubmitDelayMs": self.settings.before_submit_delay_ms,
+                    "afterAttachDelayMs": self.settings.after_attach_delay_ms,
+                }
+            )
+            assistant_response = str(result.get("assistantResponseText") or "").strip()
+
+            if not assistant_response:
+                self.automation_ready = False
+        except Exception:  # noqa: BLE001
+            self.automation_ready = False
+        finally:
+            self._end_browser_interaction()
+            self.idle_chat_keepalive_in_progress = False
 
     def _build_tray_icon(self) -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -1889,6 +2074,7 @@ class MainWindow(QMainWindow):
         self.store.save_settings(self.settings)
         self.translation_overlay.set_overlay_opacity_percent(self.settings.overlay_opacity_percent)
         self._register_hotkeys()
+        self._refresh_system_keep_awake()
         self._sync_browser_host_mode()
         QTimer.singleShot(0, self._sync_browser_runtime_state)
         if previous_settings.webview_gpu_acceleration_enabled != self.settings.webview_gpu_acceleration_enabled:
@@ -1905,6 +2091,7 @@ class MainWindow(QMainWindow):
         self.store.save_settings(self.settings)
         self.translation_overlay.set_overlay_opacity_percent(self.settings.overlay_opacity_percent)
         self._register_hotkeys()
+        self._refresh_system_keep_awake()
         self._sync_browser_host_mode()
         QTimer.singleShot(0, self._sync_browser_runtime_state)
         if previous_settings.webview_gpu_acceleration_enabled != self.settings.webview_gpu_acceleration_enabled:
@@ -2121,6 +2308,14 @@ class MainWindow(QMainWindow):
         cleaned_text = str(text or "").strip()
         return f"Quick chat text to translate:\n\n{cleaned_text}"
 
+    def _build_background_keepalive_prompt(self) -> str:
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        return (
+            "Background keepalive ping:\n\n"
+            f"Automatic idle keepalive check at {timestamp}. "
+            "No translation or action is requested. Reply only with: OK"
+        )
+
     def _process_quick_chat_translation(self, prompt_text: str) -> None:
         cleaned_prompt = str(prompt_text or "").strip()
         self.settings = self._read_settings_from_form()
@@ -2295,12 +2490,14 @@ class MainWindow(QMainWindow):
         self.browser_status_placeholder.hide()
 
     def _begin_browser_interaction(self) -> None:
+        self._mark_chat_activity()
         self.browser_interaction_active = True
         self._sync_browser_host_mode()
         self._sync_browser_runtime_state()
 
     def _end_browser_interaction(self) -> None:
         self.browser_interaction_active = False
+        self._mark_chat_activity()
         self._sync_browser_host_mode()
         self._sync_browser_runtime_state()
 
@@ -2698,6 +2895,9 @@ class MainWindow(QMainWindow):
     def _ensure_automation_ready(self) -> None:
         if self.page_loading:
             self._wait_for_page_load(self.settings.page_ready_timeout_ms + 5000)
+
+        self._sync_browser_host_mode()
+        self._sync_browser_runtime_state()
 
         ready = self._run_javascript("typeof window.__gamerTranslatorDeliver === 'function';", timeout_ms=5000)
 
