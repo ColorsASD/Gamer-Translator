@@ -9,6 +9,10 @@ $legacyDistFolder = Join-Path $distDir "Gamer Translator"
 $workDir = Join-Path $distDir ".build"
 $specDir = Join-Path $distDir ".spec"
 $rootSpec = Join-Path $root "Gamer Translator.spec"
+$mainScript = Join-Path $root "main.py"
+$iconFile = Join-Path $root "gamer_translator\assets\icon.ico"
+$icon128File = Join-Path $root "gamer_translator\assets\icon-128.png"
+$automationScript = Join-Path $root "gamer_translator\automation.js"
 
 if (-not (Test-Path $distDir)) {
   New-Item -ItemType Directory -Path $distDir | Out-Null
@@ -41,10 +45,10 @@ python -m PyInstaller `
   --collect-all "wordfreq" `
   --hidden-import "onnxruntime" `
   --name "Gamer Translator" `
-  --icon "gamer_translator\assets\icon.ico" `
-  --add-data "gamer_translator\automation.js;gamer_translator" `
-  --add-data "gamer_translator\assets\icon-128.png;gamer_translator\assets" `
-  main.py
+  --icon "$iconFile" `
+  --add-data "${automationScript};gamer_translator" `
+  --add-data "${icon128File};gamer_translator\assets" `
+  "$mainScript"
 
 foreach ($cleanupPath in @($legacyDistFolder, $workDir, $specDir, $rootSpec)) {
   if (Test-Path $cleanupPath) {
