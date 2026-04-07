@@ -1,6 +1,6 @@
 (() => {
   const FRAME_INTERVAL_MS = 20;
-  const RESPONSE_CHANGE_WAIT_MS = 700;
+  const RESPONSE_CHANGE_WAIT_MS = 300;
   const DOM_TEXT_BLOCK_TAGS = new Set([
     "ARTICLE",
     "ASIDE",
@@ -342,6 +342,7 @@
     async function attachImage(composerCandidate) {
       const composer = composerCandidate ?? await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "beviteli mező képbeillesztéshez");
       const beforeSnapshot = captureComposerAttachmentSnapshot(composer);
+      const imageUploadTimeoutMs = getImageUploadTimeoutMs();
       const file = dataUrlToFile(
         payload.imageDataUrl,
         payload.imageFilename || "snip.png",
@@ -355,7 +356,20 @@
         throw new Error("A kép csatolása nem sikerült.");
       }
 
-      return waitForAttachmentReady(composer, beforeSnapshot, Math.min(payload.pageReadyTimeoutMs, 8000));
+      return waitForAttachmentReady(composer, beforeSnapshot, imageUploadTimeoutMs);
+    }
+
+    function getImageUploadTimeoutMs() {
+      const responseTimeoutMs = Number(payload.responseTimeoutMs);
+
+      if (Number.isFinite(responseTimeoutMs) && responseTimeoutMs > 0) {
+        return responseTimeoutMs;
+      }
+
+      const pageReadyTimeoutMs = Number(payload.pageReadyTimeoutMs);
+      return Number.isFinite(pageReadyTimeoutMs) && pageReadyTimeoutMs > 0
+        ? pageReadyTimeoutMs
+        : 60000;
     }
 
     function attachViaFileInput(composer, file) {
@@ -434,18 +448,9 @@
       const expandedEditorMode = isExpandedComposerEditor(preparedComposer);
       const attempts = [];
 
-      if (sendButton instanceof HTMLButtonElement) {
-        attempts.push({
-          timeoutMs: 850,
-          run() {
-            fireClickSequence(sendButton);
-          }
-        });
-      }
-
       if (form instanceof HTMLFormElement) {
         attempts.push({
-          timeoutMs: 700,
+          timeoutMs: 450,
           run() {
             if (typeof form.requestSubmit === "function") {
               form.requestSubmit();
@@ -456,7 +461,7 @@
           }
         });
         attempts.push({
-          timeoutMs: 650,
+          timeoutMs: 350,
           run() {
             dispatchFormSubmit(form);
           }
@@ -465,10 +470,19 @@
 
       if (!expandedEditorMode) {
         attempts.push({
-          timeoutMs: 650,
+          timeoutMs: 350,
           run() {
             preparedComposer.focus();
             dispatchEnterSequence(preparedComposer);
+          }
+        });
+      }
+
+      if (sendButton instanceof HTMLButtonElement) {
+        attempts.push({
+          timeoutMs: 550,
+          run() {
+            fireClickSequence(sendButton);
           }
         });
       }
@@ -486,30 +500,29 @@
 
     async function submitImageMessage(composer) {
       const liveComposer = await waitFor(() => findComposer() || composer, 15000, "beviteli mező");
+      const imageUploadTimeoutMs = getImageUploadTimeoutMs();
       const preparedComposer = await waitFor(() => {
         const candidate = findComposer() || liveComposer;
         return isImageReadyForSubmit(candidate) ? candidate : null;
-      }, 12000, "feltöltött kép");
+      }, imageUploadTimeoutMs, "feltöltött kép");
       const beforeState = captureComposerSubmitState(preparedComposer);
       const form = findClosestForm(preparedComposer);
       const attempts = [];
 
       attempts.push({
-        timeoutMs: 1500,
+        timeoutMs: 1000,
         run() {
           const liveSendButton = findSendButton(preparedComposer);
 
-          if (!(liveSendButton instanceof HTMLButtonElement)) {
-            throw new Error("A képküldés gomb nem található.");
+          if (liveSendButton instanceof HTMLButtonElement) {
+            fireClickSequence(liveSendButton);
           }
-
-          fireClickSequence(liveSendButton);
         }
       });
 
       if (form instanceof HTMLFormElement) {
         attempts.push({
-          timeoutMs: 900,
+          timeoutMs: 650,
           run() {
             if (typeof form.requestSubmit === "function") {
               form.requestSubmit();
@@ -520,7 +533,7 @@
           }
         });
         attempts.push({
-          timeoutMs: 850,
+          timeoutMs: 500,
           run() {
             dispatchFormSubmit(form);
           }
@@ -746,7 +759,6 @@
       const promptSelectorBonus = element.id === "prompt-textarea" || element.getAttribute("data-testid") === "prompt-textarea" ? 1600 : 0;
       const textAreaBonus = element instanceof HTMLTextAreaElement ? 520 : 0;
       const contentEditableBonus = element.isContentEditable ? 360 : 0;
-      const scopeSendButtonBonus = scopeHasLikelyComposerActions(scope) ? 900 : 0;
       const scopeFileInputBonus = scopeHasLikelyFileInput(scope) ? 280 : 0;
       const formBonus = form instanceof HTMLFormElement ? 240 : 0;
       const conversationPenalty = element.closest('[data-testid^="conversation-turn-"], article') ? 3200 : 0;
@@ -757,27 +769,10 @@
         + promptSelectorBonus
         + textAreaBonus
         + contentEditableBonus
-        + scopeSendButtonBonus
         + scopeFileInputBonus
         + formBonus
         - conversationPenalty
         - hiddenPenalty;
-    }
-
-    function scopeHasLikelyComposerActions(scope) {
-      if (!(scope instanceof Element)) {
-        return false;
-      }
-
-      return Boolean(
-        scope.querySelector('button[data-testid="send-button"]')
-        || scope.querySelector('button[data-testid*="send"]')
-        || scope.querySelector('button[aria-label*="send" i]')
-        || scope.querySelector('button[aria-label*="küld" i]')
-        || scope.querySelector('button[title*="send" i]')
-        || scope.querySelector('button[title*="küld" i]')
-        || scope.querySelector('button[type="submit"]')
-      );
     }
 
     function scopeHasLikelyFileInput(scope) {
@@ -790,25 +785,30 @@
 
     function captureComposerAttachmentSnapshot(composer) {
       const scope = findComposerScope(composer);
-      const sendButton = findSendButton(composer, { allowDisabled: true });
 
       return {
         attachmentCount: countAttachmentIndicators(scope),
-        fileInputCount: countSelectedFiles(scope),
-        sendButtonState: sendButton ? readButtonState(sendButton) : null
+        fileInputCount: countSelectedFiles(scope)
       };
     }
 
     function captureComposerSubmitState(composer) {
       const liveComposer = findComposer() || composer;
       const scope = findComposerScope(liveComposer);
-      const sendButton = findSendButton(liveComposer, { allowDisabled: true });
+      const userMessages = findUserMessageNodes();
+      const assistantMessages = findAssistantMessageNodes();
+      const lastUserMessage = userMessages.at(-1) || null;
+      const lastAssistantMessage = assistantMessages.at(-1) || null;
 
       return {
         composerText: normalizePromptStructure(readComposerText(liveComposer)),
         attachmentCount: countAttachmentIndicators(scope),
         fileInputCount: countSelectedFiles(scope),
-        sendButtonState: sendButton ? readButtonState(sendButton) : null
+        userCount: userMessages.length,
+        lastUserNodeId: lastUserMessage ? getDomNodeId(lastUserMessage) : "",
+        assistantCount: assistantMessages.length,
+        lastAssistantNodeId: lastAssistantMessage ? getDomNodeId(lastAssistantMessage) : "",
+        lastAssistantPending: lastAssistantMessage ? isAssistantResponsePending(lastAssistantMessage) : false
       };
     }
 
@@ -820,25 +820,11 @@
         const scope = findComposerScope(liveComposer);
         const attachmentCount = countAttachmentIndicators(scope);
         const fileInputCount = countSelectedFiles(scope);
-        const sendButton = findSendButton(liveComposer, { allowDisabled: true });
-        const sendButtonState = sendButton ? readButtonState(sendButton) : null;
         const attachmentAccepted = attachmentCount > beforeSnapshot.attachmentCount || fileInputCount > beforeSnapshot.fileInputCount;
         const uploadPending = hasPendingAttachmentWork(scope);
 
         if (attachmentAccepted && !uploadPending) {
           return liveComposer;
-        }
-
-        if (
-          sendButtonState
-          && (
-            !beforeSnapshot.sendButtonState
-            || !sameButtonState(beforeSnapshot.sendButtonState, sendButtonState)
-          )
-        ) {
-          if (!sendButtonState.disabled || !uploadPending) {
-            return liveComposer;
-          }
         }
 
         await waitForNextStateTurn(timeoutMs - (Date.now() - startedAt));
@@ -892,12 +878,22 @@
         return null;
       }
 
+      const structuralContainer = composer.closest(
+        'form, [data-testid*="composer" i], [data-testid*="prompt" i], [class*="composer" i], [class*="prompt" i]'
+      );
+
+      if (structuralContainer instanceof Element && structuralContainer !== composer) {
+        return structuralContainer;
+      }
+
       let current = composer.parentElement;
       let depth = 0;
 
       while (current && depth < 12) {
         if (
-          current.querySelector('button[data-testid="send-button"]')
+          current.querySelector('input[type="file"]')
+          || current.querySelector('form')
+          || current.querySelector('button[data-testid="send-button"]')
           || current.querySelector('button[data-testid*="send"]')
           || current.querySelector('button[aria-label*="send" i]')
           || current.querySelector('button[aria-label*="küld" i]')
@@ -961,23 +957,32 @@
         '[class*="progress"]'
       ];
 
-      const pendingNodes = pendingSelectors
-        .flatMap((selector) => Array.from(scope.querySelectorAll(selector)))
-        .filter((element) => isTrackablePendingNode(element));
+      const pendingNodes = [];
+
+      if (scope instanceof HTMLElement) {
+        for (const selector of pendingSelectors) {
+          try {
+            if (scope.matches(selector) && isTrackablePendingNode(scope)) {
+              pendingNodes.push(scope);
+              break;
+            }
+          } catch (_error) {
+            // A selector kompatibilitási hibája miatt nem állhat meg a pending-ellenőrzés.
+          }
+        }
+      }
+
+      pendingNodes.push(
+        ...pendingSelectors
+          .flatMap((selector) => Array.from(scope.querySelectorAll(selector)))
+          .filter((element) => isTrackablePendingNode(element))
+      );
 
       if (pendingNodes.length > 0) {
         return true;
       }
 
-      const attachmentCount = countAttachmentIndicators(scope);
-      const fileInputCount = countSelectedFiles(scope);
-
-      if (attachmentCount === 0 && fileInputCount === 0) {
-        return false;
-      }
-
-      const sendButton = findSendButton(findComposer(), { allowDisabled: true });
-      return sendButton instanceof HTMLButtonElement && sendButton.disabled;
+      return false;
     }
 
     function findSendButton(composer, options = {}) {
@@ -1210,26 +1215,27 @@
     }
 
     function isGenerationInProgress() {
-      const assistantNodes = findAssistantMessageNodes();
-      const latestAssistantNode = assistantNodes.at(-1) || null;
+      return findAssistantMessageNodes().some((assistantNode) => isAssistantResponsePending(assistantNode));
+    }
 
-      if (latestAssistantNode instanceof HTMLElement && isAssistantMessageBusy(latestAssistantNode)) {
-        return true;
-      }
-
-      const sendButton = findSendButton(findComposer(), { allowDisabled: true });
-
-      if (!sendButton) {
-        return false;
-      }
-
-      return buttonLooksLikeStop(readButtonState(sendButton));
+    function findUserMessageNodes() {
+      return findMessageNodesByAuthor("user");
     }
 
     function findAssistantMessageNodes() {
-      const directMatches = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'))
+      return findMessageNodesByAuthor("assistant");
+    }
+
+    function findMessageNodesByAuthor(authorRole) {
+      const normalizedAuthorRole = String(authorRole || "").trim().toLowerCase();
+
+      if (!normalizedAuthorRole) {
+        return [];
+      }
+
+      const directMatches = Array.from(document.querySelectorAll(`[data-message-author-role="${normalizedAuthorRole}"]`))
         .filter(isDomTrackableElement)
-        .filter((element) => Boolean(normalizeWhitespace(extractAssistantText(element))) || isAssistantMessageBusy(element));
+        .filter((element) => doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
 
       if (directMatches.length > 0) {
         return Array.from(new Set(directMatches));
@@ -1237,27 +1243,53 @@
 
       const fallbackMatches = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"], article'))
         .filter(isDomTrackableElement)
-        .filter((element) => {
-          const authorHints = [
-            element.getAttribute("data-message-author-role"),
-            element.querySelector('[data-message-author-role]')?.getAttribute("data-message-author-role"),
-            element.getAttribute("aria-label")
-          ]
-            .filter(Boolean)
-            .join(" ")
-            .toLowerCase();
-
-          if (!authorHints.includes("assistant")) {
-            return false;
-          }
-
-          return Boolean(normalizeWhitespace(extractAssistantText(element)));
-        });
+        .filter((element) => doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
 
       return Array.from(new Set(fallbackMatches));
     }
 
+    function doesMessageNodeMatchAuthor(element, authorRole) {
+      if (!(element instanceof HTMLElement)) {
+        return false;
+      }
+
+      const normalizedAuthorRole = String(authorRole || "").trim().toLowerCase();
+
+      if (!normalizedAuthorRole) {
+        return false;
+      }
+
+      const authorHints = [
+        element.getAttribute("data-message-author-role"),
+        element.querySelector('[data-message-author-role]')?.getAttribute("data-message-author-role"),
+        element.getAttribute("aria-label")
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      const authorAliases = normalizedAuthorRole === "user"
+        ? ["user", "you"]
+        : [normalizedAuthorRole];
+
+      if (!authorAliases.some((authorAlias) => authorHints.includes(authorAlias))) {
+        return false;
+      }
+
+      const extractedText = normalizeWhitespace(extractMessageText(element));
+
+      if (normalizedAuthorRole === "assistant") {
+        return Boolean(extractedText) || isAssistantMessageBusy(element);
+      }
+
+      return Boolean(extractedText);
+    }
+
     function extractAssistantText(element) {
+      return extractMessageText(element);
+    }
+
+    function extractMessageText(element) {
       const structuredText = normalizeStructuredDomText(readStructuredDomText(element));
 
       if (structuredText) {
@@ -1626,17 +1658,6 @@
 
       return Number.MAX_SAFE_INTEGER;
     }
-
-    function readButtonState(button) {
-      return {
-        text: normalizeWhitespace(button.textContent),
-        ariaLabel: normalizeWhitespace(button.getAttribute("aria-label")),
-        title: normalizeWhitespace(button.getAttribute("title")),
-        testId: normalizeWhitespace(button.dataset?.testid),
-        disabled: Boolean(button.disabled)
-      };
-    }
-
     async function waitFor(factory, timeoutMs, label) {
       const startedAt = Date.now();
 
@@ -1672,35 +1693,20 @@
 
     async function waitForSendTransition(beforeState, timeoutMs) {
       const startedAt = Date.now();
+      const beforeComposerText = normalizePromptStructure(beforeState.composerText);
 
       while (Date.now() - startedAt < timeoutMs) {
         const composer = findComposer();
         const afterState = captureComposerSubmitState(composer);
-        const beforeButtonState = beforeState.sendButtonState;
-        const afterButtonState = afterState.sendButtonState;
+        const afterComposerText = normalizePromptStructure(afterState.composerText);
+        const composerChanged = Boolean(beforeComposerText) && afterComposerText !== beforeComposerText;
+        const userMessageAppeared = afterState.userCount > beforeState.userCount
+          || (Boolean(afterState.lastUserNodeId) && afterState.lastUserNodeId !== beforeState.lastUserNodeId);
+        const assistantActivityStarted = afterState.assistantCount > beforeState.assistantCount
+          || (Boolean(afterState.lastAssistantNodeId) && afterState.lastAssistantNodeId !== beforeState.lastAssistantNodeId)
+          || (afterState.lastAssistantPending && !beforeState.lastAssistantPending);
 
-        if (beforeButtonState && !afterButtonState) {
-          return true;
-        }
-
-        if (afterButtonState && beforeButtonState) {
-          if (afterButtonState.disabled && !beforeButtonState.disabled) {
-            return true;
-          }
-
-          if (buttonLooksLikeStop(afterButtonState) && !buttonLooksLikeStop(beforeButtonState)) {
-            return true;
-          }
-
-          if (!sameButtonState(beforeButtonState, afterButtonState)) {
-            return true;
-          }
-        }
-
-        if (
-          beforeState.composerText
-          && normalizePromptStructure(afterState.composerText) !== normalizePromptStructure(beforeState.composerText)
-        ) {
+        if (composerChanged || userMessageAppeared || assistantActivityStarted) {
           return true;
         }
 
@@ -1723,8 +1729,12 @@
 
       while (Date.now() - startedAt < timeoutMs) {
         const liveComposer = findComposer() || composer;
-        const scope = findComposerScope(liveComposer);
         const afterState = captureComposerSubmitState(liveComposer);
+        const userMessageAppeared = afterState.userCount > beforeState.userCount
+          || (Boolean(afterState.lastUserNodeId) && afterState.lastUserNodeId !== beforeState.lastUserNodeId);
+        const assistantActivityStarted = afterState.assistantCount > beforeState.assistantCount
+          || (Boolean(afterState.lastAssistantNodeId) && afterState.lastAssistantNodeId !== beforeState.lastAssistantNodeId)
+          || (afterState.lastAssistantPending && !beforeState.lastAssistantPending);
 
         if (beforeState.attachmentCount > 0 && afterState.attachmentCount < beforeState.attachmentCount) {
           return true;
@@ -1734,14 +1744,8 @@
           return true;
         }
 
-        if (beforeState.sendButtonState && afterState.sendButtonState) {
-          if (buttonLooksLikeStop(afterState.sendButtonState) && !buttonLooksLikeStop(beforeState.sendButtonState)) {
-            return true;
-          }
-
-          if (!sameButtonState(beforeState.sendButtonState, afterState.sendButtonState) && !hasPendingAttachmentWork(scope)) {
-            return true;
-          }
+        if (userMessageAppeared || assistantActivityStarted) {
+          return true;
         }
 
         if (isGenerationInProgress()) {
@@ -1752,23 +1756,6 @@
       }
 
       return false;
-    }
-
-    function sameButtonState(left, right) {
-      return left.text === right.text
-        && left.ariaLabel === right.ariaLabel
-        && left.title === right.title
-        && left.testId === right.testId
-        && left.disabled === right.disabled;
-    }
-
-    function buttonLooksLikeStop(state) {
-      const label = [state.text, state.ariaLabel, state.title, state.testId]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      return ["stop", "állj", "leállít", "megszakít", "cancel"].some((needle) => label.includes(needle));
     }
 
     function fireClickSequence(element) {

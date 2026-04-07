@@ -53,6 +53,7 @@ from .settings_store import AppSettings, LastRunStatus, SettingsStore
 BROWSER_CONSOLE_DEBUG = os.environ.get("GAMER_TRANSLATOR_DEBUG_BROWSER", "").strip() == "1"
 UI_FRAME_INTERVAL_MS = 20
 UI_FRAME_INTERVAL_SECONDS = UI_FRAME_INTERVAL_MS / 1000.0
+SCREEN_CLIP_ARM_TIMEOUT_SECONDS = 45.0
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -615,10 +616,21 @@ class QuickChatTextEdit(QPlainTextEdit):
     cancel_requested = Signal()
 
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
-        if not self.isReadOnly() and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            self.submit_requested.emit()
-            event.accept()
-            return
+        if not self.isReadOnly() and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            modifiers = event.modifiers()
+            non_keypad_modifiers = modifiers & ~Qt.KeyboardModifier.KeypadModifier
+
+            if non_keypad_modifiers == Qt.KeyboardModifier.ControlModifier:
+                cursor = self.textCursor()
+                cursor.insertText("\n")
+                self.setTextCursor(cursor)
+                event.accept()
+                return
+
+            if non_keypad_modifiers == Qt.KeyboardModifier.NoModifier:
+                self.submit_requested.emit()
+                event.accept()
+                return
 
         if not self.isReadOnly() and event.key() == Qt.Key.Key_Escape:
             self.cancel_requested.emit()
@@ -673,7 +685,7 @@ class QuickChatOverlay(QWidget):
         self.title_label = QLabel("Gyors chat")
         self.title_label.setObjectName("quickChatTitle")
 
-        self.hint_label = QLabel("Írd be a fordítandó szöveget. Küldés: Ctrl+Enter, bezárás: Esc")
+        self.hint_label = QLabel("Írd be a fordítandó szöveget. Küldés: Enter, sortörés: Ctrl+Enter, bezárás: Esc")
         self.hint_label.setObjectName("quickChatHint")
         self.hint_label.setWordWrap(True)
 
@@ -1020,6 +1032,7 @@ class MainWindow(QMainWindow):
 
         self.clipboard = QGuiApplication.clipboard()
         self.last_seen_image_signature = self._current_clipboard_signature()
+        self.screen_clip_hotkey_armed_until = 0.0
         self.clipboard_debounce_timer = QTimer(self)
         self.clipboard_debounce_timer.setSingleShot(True)
         self.clipboard_debounce_timer.setInterval(120)
@@ -2125,11 +2138,18 @@ class MainWindow(QMainWindow):
             return
 
         payload = self._read_clipboard_image_payload()
+        screen_clip_hotkey_armed = self._is_screen_clip_hotkey_armed()
 
         if not payload:
             return
 
         signature = str(payload["imageSignature"])
+
+        if screen_clip_hotkey_armed and signature:
+            self._clear_screen_clip_hotkey_arm()
+            self.last_seen_image_signature = signature
+            self._process_clipboard_translation(payload)
+            return
 
         if not signature or signature == self.last_seen_image_signature:
             return
@@ -2665,12 +2685,13 @@ class MainWindow(QMainWindow):
             self._set_live_status("A képkivágási gyorsbillentyű csak Windowson érhető el.")
             return
 
-        self.last_seen_image_signature = self._current_clipboard_signature()
+        self._arm_screen_clip_hotkey()
 
         try:
             os.startfile("ms-screenclip:")
             self._set_live_status(f"A Windows képkivágó megnyitva: {self.settings.screen_clip_hotkey}")
         except OSError as error:
+            self._clear_screen_clip_hotkey_arm()
             self._set_live_status(f"A képkivágó nem indítható el: {error}")
 
     def _trigger_quick_chat_hotkey(self) -> None:
@@ -3019,6 +3040,22 @@ class MainWindow(QMainWindow):
     def _current_clipboard_signature(self) -> str:
         payload = self._read_clipboard_image_payload()
         return str(payload["imageSignature"]) if payload else ""
+
+    def _arm_screen_clip_hotkey(self) -> None:
+        self.screen_clip_hotkey_armed_until = time.monotonic() + SCREEN_CLIP_ARM_TIMEOUT_SECONDS
+
+    def _clear_screen_clip_hotkey_arm(self) -> None:
+        self.screen_clip_hotkey_armed_until = 0.0
+
+    def _is_screen_clip_hotkey_armed(self) -> bool:
+        if self.screen_clip_hotkey_armed_until <= 0.0:
+            return False
+
+        if time.monotonic() >= self.screen_clip_hotkey_armed_until:
+            self.screen_clip_hotkey_armed_until = 0.0
+            return False
+
+        return True
 
     def _focus_window(self) -> None:
         if self.isMinimized():
