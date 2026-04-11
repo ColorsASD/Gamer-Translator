@@ -1,6 +1,7 @@
 (() => {
+  const AUTOMATION_SCRIPT_VERSION = "2026-04-11-1";
   const FRAME_INTERVAL_MS = 20;
-  const RESPONSE_CHANGE_WAIT_MS = 300;
+  const SELF_HEAL_CHECK_LIMIT = 5;
   const DOM_TEXT_BLOCK_TAGS = new Set([
     "ARTICLE",
     "ASIDE",
@@ -180,6 +181,35 @@
       listeners: new Set()
     };
 
+    const isInternalTrackerNode = (node) => {
+      if (!(node instanceof Node)) {
+        return false;
+      }
+
+      if (node instanceof Element) {
+        return node.id === "__gamerTranslatorFramePacer"
+          || Boolean(node.closest("#__gamerTranslatorFramePacer"));
+      }
+
+      return isInternalTrackerNode(node.parentNode);
+    };
+
+    const hasMeaningfulNode = (nodes) => Array.from(nodes || []).some((node) => !isInternalTrackerNode(node));
+
+    const isMeaningfulMutation = (mutation) => {
+      if (!(mutation instanceof MutationRecord)) {
+        return false;
+      }
+
+      if (mutation.type === "childList") {
+        return hasMeaningfulNode(mutation.addedNodes)
+          || hasMeaningfulNode(mutation.removedNodes)
+          || !isInternalTrackerNode(mutation.target);
+      }
+
+      return !isInternalTrackerNode(mutation.target);
+    };
+
     const notifyListeners = () => {
       state.version += 1;
 
@@ -199,6 +229,10 @@
 
       state.observer = new MutationObserver((mutations) => {
         if (!Array.isArray(mutations) || mutations.length === 0) {
+          return;
+        }
+
+        if (!mutations.some((mutation) => isMeaningfulMutation(mutation))) {
           return;
         }
 
@@ -259,14 +293,28 @@
         resolve(reason);
       };
 
-      const handleChange = () => finish("mutation");
+      const handleChange = () => finish("change");
       state.listeners.add(handleChange);
       timeoutId = window.setTimeout(() => finish("timeout"), Math.max(FRAME_INTERVAL_MS, timeoutMs));
     });
 
+    const subscribe = (listener) => {
+      if (typeof listener !== "function") {
+        return () => {};
+      }
+
+      start();
+      state.listeners.add(listener);
+
+      return () => {
+        state.listeners.delete(listener);
+      };
+    };
+
     const tracker = {
       start,
       stop,
+      subscribe,
       waitForChange,
       getVersion() {
         return state.version;
@@ -280,15 +328,122 @@
 
   ensureDomActivityTracker();
 
-  if (typeof window.__gamerTranslatorDeliver === "function") {
+  function writeProgressEntry(progressCallId, progress) {
+    const normalizedProgressCallId = String(progressCallId || "").trim();
+
+    if (!normalizedProgressCallId || !progress || typeof progress !== "object") {
+      return;
+    }
+
+    window.__gamerTranslatorProgress = window.__gamerTranslatorProgress || Object.create(null);
+
+    let nextSequence = 1;
+    const previousEntry = window.__gamerTranslatorProgress[normalizedProgressCallId];
+
+    if (typeof previousEntry === "string" && previousEntry) {
+      try {
+        const parsedEntry = JSON.parse(previousEntry);
+        nextSequence = Number(parsedEntry?.seq || 0) + 1;
+      } catch (_error) {
+        nextSequence = 1;
+      }
+    }
+
+    window.__gamerTranslatorProgress[normalizedProgressCallId] = JSON.stringify({
+      ...progress,
+      seq: nextSequence
+    });
+  }
+
+  function ensureAssistantResponseFollowUps() {
+    window.__gamerTranslatorAssistantResponseFollowUps = window.__gamerTranslatorAssistantResponseFollowUps || Object.create(null);
+    return window.__gamerTranslatorAssistantResponseFollowUps;
+  }
+
+  function stopAssistantResponseFollowUp(followUpProgressCallId, options = {}) {
+    const normalizedFollowUpProgressCallId = String(followUpProgressCallId || "").trim();
+
+    if (!normalizedFollowUpProgressCallId) {
+      return;
+    }
+
+    const followUps = ensureAssistantResponseFollowUps();
+    const existingFollowUp = followUps[normalizedFollowUpProgressCallId];
+
+    if (existingFollowUp) {
+      existingFollowUp.stopped = true;
+
+      if (typeof existingFollowUp.unsubscribe === "function") {
+        existingFollowUp.unsubscribe();
+      }
+
+      delete followUps[normalizedFollowUpProgressCallId];
+    }
+
+    if (options.emitDone !== false) {
+      writeProgressEntry(normalizedFollowUpProgressCallId, {
+        kind: "assistant_response_watch_done",
+        done: true
+      });
+    }
+  }
+
+  window.__gamerTranslatorStopResponseFollowUp = stopAssistantResponseFollowUp;
+
+  if (window.__gamerTranslatorDeliverVersion !== AUTOMATION_SCRIPT_VERSION) {
+    const previousComposerAutoRecovery = window.__gamerTranslatorComposerAutoRecovery;
+
+    if (previousComposerAutoRecovery && typeof previousComposerAutoRecovery === "object") {
+      previousComposerAutoRecovery.suspendedCount = Number.MAX_SAFE_INTEGER;
+
+      if (typeof previousComposerAutoRecovery.unsubscribe === "function") {
+        previousComposerAutoRecovery.unsubscribe();
+      }
+    }
+
+    window.__gamerTranslatorComposerAutoRecovery = null;
+  }
+
+  if (
+    typeof window.__gamerTranslatorDeliver === "function"
+    && window.__gamerTranslatorDeliverVersion === AUTOMATION_SCRIPT_VERSION
+  ) {
+    try {
+      window.__gamerTranslatorDeliver({
+        initializeComposerAutoRecovery: true,
+        autoSubmit: false,
+        copyResponseToClipboard: false,
+        pageReadyTimeoutMs: 15000,
+        responseTimeoutMs: 0
+      }).catch(() => {});
+    } catch (_error) {
+      // Ha a korabbi automatikus inicializalas mar fut, nem blokkolhatja az ujrabekotest.
+    }
+
     return;
   }
 
   window.__gamerTranslatorDeliver = async function deliverPromptToChatGpt(payload) {
-    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const composerAutoRecovery = ensureComposerAutoRecoveryWatcher();
+    const reportProgress = (progress) => {
+      writeProgressEntry(payload.progressCallId, progress);
+    };
+    const shouldSuspendComposerAutoRecovery = !payload.initializeComposerAutoRecovery;
+
+    if (shouldSuspendComposerAutoRecovery) {
+      composerAutoRecovery.suspendedCount += 1;
+    }
 
     try {
-      if (!payload.prompt && !payload.imageDataUrl) {
+      if (payload.initializeComposerAutoRecovery) {
+        composerAutoRecovery.requestEvaluation();
+        return {
+          ok: true,
+          composerAutoRecoveryReady: true
+        };
+      }
+
+      if (!payload.prompt && !payload.imageDataUrl && !payload.repairExistingComposerPayload) {
         throw new Error("Nincs elküldhető tartalom.");
       }
 
@@ -297,6 +452,19 @@
         : { count: 0, lastNodeId: "", lastText: "", lastPending: false };
 
       let activeComposer = await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "beviteli mező");
+
+      if (payload.repairExistingComposerPayload && !payload.prompt && !payload.imageDataUrl) {
+        if (payload.autoSubmit) {
+          await submitExistingComposerPayload(activeComposer);
+        }
+
+        return {
+          ok: true,
+          assistantResponseText: "",
+          assistantResponseCopied: false,
+          followUpProgressCallId: ""
+        };
+      }
 
       if (payload.imageDataUrl) {
         activeComposer = await attachImage(activeComposer);
@@ -321,42 +489,90 @@
       }
 
       let assistantResponseText = "";
+      let followUpProgressCallId = "";
 
       if (payload.copyResponseToClipboard) {
-        const responseResult = await waitForAssistantResponse(assistantSnapshotBeforeSend, payload.responseTimeoutMs);
+        const responseResult = await waitForAssistantResponse(assistantSnapshotBeforeSend, payload.responseTimeoutMs, reportProgress);
         assistantResponseText = responseResult.text;
+        followUpProgressCallId = String(responseResult.followUpProgressCallId || "").trim();
       }
 
       return {
         ok: true,
         assistantResponseText,
-        assistantResponseCopied: false
+        assistantResponseCopied: false,
+        followUpProgressCallId
       };
     } catch (error) {
       return {
         ok: false,
         error: error instanceof Error ? error.message : String(error)
       };
+    } finally {
+      if (shouldSuspendComposerAutoRecovery) {
+        composerAutoRecovery.suspendedCount = Math.max(0, composerAutoRecovery.suspendedCount - 1);
+        composerAutoRecovery.requestEvaluation();
+      }
     }
 
     async function attachImage(composerCandidate) {
-      const composer = composerCandidate ?? await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "beviteli mező képbeillesztéshez");
-      const beforeSnapshot = captureComposerAttachmentSnapshot(composer);
+      let composer = composerCandidate ?? await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "beviteli mező képbeillesztéshez");
       const imageUploadTimeoutMs = getImageUploadTimeoutMs();
       const file = dataUrlToFile(
         payload.imageDataUrl,
         payload.imageFilename || "snip.png",
         payload.imageMimeType || "image/png"
       );
+      let attachAttemptStarted = false;
 
-      const attachedByInput = attachViaFileInput(composer, file);
-      const attachedByDrop = attachedByInput ? false : attachViaDrop(composer, file);
+      for (let checkIndex = 0; checkIndex < SELF_HEAL_CHECK_LIMIT; checkIndex += 1) {
+        composer = findComposer() || composer;
+        const currentSnapshot = captureComposerAttachmentSnapshot(composer);
 
-      if (!attachedByInput && !attachedByDrop) {
-        throw new Error("A kép csatolása nem sikerült.");
+        if (isAttachmentReadySnapshot(currentSnapshot)) {
+          return composer;
+        }
+
+        if (!hasAttachmentSnapshot(currentSnapshot) || !currentSnapshot.hasPendingAttachmentWork) {
+          const beforeSnapshot = currentSnapshot;
+          const attachedByInput = attachViaFileInput(composer, file);
+          const attachedByDrop = attachedByInput ? false : attachViaDrop(composer, file);
+
+          if (!attachedByInput && !attachedByDrop && !attachAttemptStarted) {
+            throw new Error("A kép csatolása nem sikerült.");
+          }
+
+          attachAttemptStarted = attachAttemptStarted || attachedByInput || attachedByDrop;
+          const afterAttachComposer = findComposer() || composer;
+          const afterAttachSnapshot = captureComposerAttachmentSnapshot(afterAttachComposer);
+
+          if (
+            getAttachmentSnapshotKey(afterAttachSnapshot) !== getAttachmentSnapshotKey(beforeSnapshot)
+            || hasAttachmentSnapshot(afterAttachSnapshot)
+            || afterAttachSnapshot.hasPendingAttachmentWork
+          ) {
+            const attachedComposer = await waitForAttachmentReady(
+              afterAttachComposer,
+              beforeSnapshot,
+              imageUploadTimeoutMs,
+            );
+
+            if (attachedComposer) {
+              composer = attachedComposer;
+            }
+          }
+        }
+
+        const verifiedComposer = findComposer() || composer;
+        const verifiedSnapshot = captureComposerAttachmentSnapshot(verifiedComposer);
+
+        if (isAttachmentReadySnapshot(verifiedSnapshot)) {
+          return verifiedComposer;
+        }
+
       }
 
-      return waitForAttachmentReady(composer, beforeSnapshot, imageUploadTimeoutMs);
+      throw new Error("A kép csatolása az ismételt ellenőrzések után sem sikerült.");
     }
 
     function getImageUploadTimeoutMs() {
@@ -436,66 +652,128 @@
       return new File([bytes], filename, { type: mimeType || "image/png" });
     }
 
-    async function submitTextMessage(composer) {
+    async function submitTextMessage(composer, options = {}) {
       const liveComposer = await waitFor(() => findComposer() || composer, 15000, "beviteli mező");
+      const imageUploadTimeoutMs = getImageUploadTimeoutMs();
+      const requireReadyAttachment = Boolean(options.requireReadyAttachment ?? payload.imageDataUrl);
       const preparedComposer = await waitFor(() => {
         const candidate = findComposer() || liveComposer;
-        return isComposerReadyForSubmit(candidate) ? candidate : null;
-      }, 12000, "beküldhető tartalom");
+        const promptReady = Boolean(normalizePromptStructure(readComposerText(candidate)));
+
+        if (!isComposerReadyForSubmit(candidate) || !promptReady) {
+          return null;
+        }
+
+        if (requireReadyAttachment && !isImageReadyForSubmit(candidate)) {
+          return null;
+        }
+
+        return candidate;
+      }, requireReadyAttachment ? imageUploadTimeoutMs : 12000, "beküldhető tartalom");
       const beforeState = captureComposerSubmitState(preparedComposer);
-      const sendButton = findSendButton(preparedComposer);
-      const form = findClosestForm(preparedComposer);
       const expandedEditorMode = isExpandedComposerEditor(preparedComposer);
       const attempts = [];
 
-      if (form instanceof HTMLFormElement) {
-        attempts.push({
-          timeoutMs: 450,
-          run() {
-            if (typeof form.requestSubmit === "function") {
-              form.requestSubmit();
-              return;
-            }
+      attempts.push({
+        timeoutMs: 450,
+        run(targetComposer) {
+          const liveTargetComposer = findComposer() || targetComposer;
+          const liveForm = findClosestForm(liveTargetComposer);
 
-            dispatchFormSubmit(form);
+          if (!(liveForm instanceof HTMLFormElement)) {
+            return;
           }
-        });
-        attempts.push({
-          timeoutMs: 350,
-          run() {
-            dispatchFormSubmit(form);
+
+          if (typeof liveForm.requestSubmit === "function") {
+            liveForm.requestSubmit();
+            return;
           }
-        });
-      }
+
+          dispatchFormSubmit(liveForm);
+        }
+      });
+      attempts.push({
+        timeoutMs: 350,
+        run(targetComposer) {
+          const liveTargetComposer = findComposer() || targetComposer;
+          const liveForm = findClosestForm(liveTargetComposer);
+
+          if (!(liveForm instanceof HTMLFormElement)) {
+            return;
+          }
+
+          dispatchFormSubmit(liveForm);
+        }
+      });
 
       if (!expandedEditorMode) {
         attempts.push({
           timeoutMs: 350,
-          run() {
-            preparedComposer.focus();
-            dispatchEnterSequence(preparedComposer);
+          run(targetComposer) {
+            const liveTargetComposer = findComposer() || targetComposer;
+            liveTargetComposer.focus();
+            dispatchEnterSequence(liveTargetComposer);
           }
         });
       }
 
-      if (sendButton instanceof HTMLButtonElement) {
-        attempts.push({
-          timeoutMs: 550,
-          run() {
-            fireClickSequence(sendButton);
+      attempts.push({
+        timeoutMs: 550,
+        run(targetComposer) {
+          const liveTargetComposer = findComposer() || targetComposer;
+          const liveSendButton = findSendButton(liveTargetComposer);
+
+          if (liveSendButton instanceof HTMLButtonElement) {
+            fireClickSequence(liveSendButton);
           }
-        });
-      }
-
-      for (const attempt of attempts) {
-        attempt.run();
-
-        if (await waitForSendTransition(beforeState, attempt.timeoutMs)) {
-          return;
         }
+      });
+
+      await ensureSubmissionDelivered(
+        preparedComposer,
+        beforeState,
+        attempts,
+        "A tartalom bekerült, de a beküldést nem tudtam elindítani.",
+      );
+    }
+
+    async function submitExistingComposerPayload(composerCandidate) {
+      const liveComposer = await waitFor(() => findComposer() || composerCandidate, 15000, "beviteli mező");
+      let currentState = captureComposerSubmitState(liveComposer);
+
+      if (!hasComposerPayloadState(currentState)) {
+        return;
       }
 
-      throw new Error("A tartalom bekerült, de a beküldést nem tudtam elindítani.");
+      if (currentState.hasPendingAttachmentWork) {
+        const awaitedComposer = await waitFor(() => {
+          const candidate = findComposer() || liveComposer;
+          const candidateState = captureComposerSubmitState(candidate);
+          return hasComposerPayloadState(candidateState) && !candidateState.hasPendingAttachmentWork
+            ? candidate
+            : null;
+        }, getImageUploadTimeoutMs(), "beküldhető composer tartalom");
+
+        currentState = captureComposerSubmitState(awaitedComposer);
+      }
+
+      const preparedComposer = findComposer() || liveComposer;
+      currentState = captureComposerSubmitState(preparedComposer);
+      const hasTextPayload = Boolean(normalizePromptStructure(currentState.composerText));
+      const hasAttachmentPayload = hasAttachmentSnapshot(currentState);
+
+      if (!hasTextPayload && !hasAttachmentPayload) {
+        return;
+      }
+
+      if (hasTextPayload) {
+        await submitTextMessage(preparedComposer, {
+          requireReadyAttachment: hasAttachmentPayload
+        });
+        return;
+      }
+
+      await submitImageMessage(preparedComposer);
     }
 
     async function submitImageMessage(composer) {
@@ -506,13 +784,13 @@
         return isImageReadyForSubmit(candidate) ? candidate : null;
       }, imageUploadTimeoutMs, "feltöltött kép");
       const beforeState = captureComposerSubmitState(preparedComposer);
-      const form = findClosestForm(preparedComposer);
       const attempts = [];
 
       attempts.push({
         timeoutMs: 1000,
-        run() {
-          const liveSendButton = findSendButton(preparedComposer);
+        run(targetComposer) {
+          const liveTargetComposer = findComposer() || targetComposer;
+          const liveSendButton = findSendButton(liveTargetComposer);
 
           if (liveSendButton instanceof HTMLButtonElement) {
             fireClickSequence(liveSendButton);
@@ -520,35 +798,44 @@
         }
       });
 
-      if (form instanceof HTMLFormElement) {
-        attempts.push({
-          timeoutMs: 650,
-          run() {
-            if (typeof form.requestSubmit === "function") {
-              form.requestSubmit();
-              return;
-            }
+      attempts.push({
+        timeoutMs: 650,
+        run(targetComposer) {
+          const liveTargetComposer = findComposer() || targetComposer;
+          const liveForm = findClosestForm(liveTargetComposer);
 
-            dispatchFormSubmit(form);
+          if (!(liveForm instanceof HTMLFormElement)) {
+            return;
           }
-        });
-        attempts.push({
-          timeoutMs: 500,
-          run() {
-            dispatchFormSubmit(form);
+
+          if (typeof liveForm.requestSubmit === "function") {
+            liveForm.requestSubmit();
+            return;
           }
-        });
-      }
 
-      for (const attempt of attempts) {
-        attempt.run();
-
-        if (await waitForImageSendTransition(beforeState, preparedComposer, attempt.timeoutMs)) {
-          return;
+          dispatchFormSubmit(liveForm);
         }
-      }
+      });
+      attempts.push({
+        timeoutMs: 500,
+        run(targetComposer) {
+          const liveTargetComposer = findComposer() || targetComposer;
+          const liveForm = findClosestForm(liveTargetComposer);
 
-      throw new Error("A kép csatolva maradt, de a beküldést nem tudtam elindítani.");
+          if (!(liveForm instanceof HTMLFormElement)) {
+            return;
+          }
+
+          dispatchFormSubmit(liveForm);
+        }
+      });
+
+      await ensureSubmissionDelivered(
+        preparedComposer,
+        beforeState,
+        attempts,
+        "A kép csatolva maradt, de a beküldést nem tudtam elindítani.",
+      );
     }
 
     function writePrompt(element, prompt) {
@@ -785,16 +1072,21 @@
 
     function captureComposerAttachmentSnapshot(composer) {
       const scope = findComposerScope(composer);
+      const attachmentCount = countAttachmentIndicators(scope);
+      const fileInputCount = countSelectedFiles(scope);
 
       return {
-        attachmentCount: countAttachmentIndicators(scope),
-        fileInputCount: countSelectedFiles(scope)
+        attachmentCount,
+        fileInputCount,
+        hasPendingAttachmentWork: hasPendingAttachmentWork(scope),
       };
     }
 
     function captureComposerSubmitState(composer) {
       const liveComposer = findComposer() || composer;
       const scope = findComposerScope(liveComposer);
+      const attachmentCount = countAttachmentIndicators(scope);
+      const fileInputCount = countSelectedFiles(scope);
       const userMessages = findUserMessageNodes();
       const assistantMessages = findAssistantMessageNodes();
       const lastUserMessage = userMessages.at(-1) || null;
@@ -802,8 +1094,9 @@
 
       return {
         composerText: normalizePromptStructure(readComposerText(liveComposer)),
-        attachmentCount: countAttachmentIndicators(scope),
-        fileInputCount: countSelectedFiles(scope),
+        attachmentCount,
+        fileInputCount,
+        hasPendingAttachmentWork: hasPendingAttachmentWork(scope),
         userCount: userMessages.length,
         lastUserNodeId: lastUserMessage ? getDomNodeId(lastUserMessage) : "",
         assistantCount: assistantMessages.length,
@@ -812,25 +1105,96 @@
       };
     }
 
+    function getAssistantSnapshotKey(snapshot) {
+      if (!snapshot || typeof snapshot !== "object") {
+        return "";
+      }
+
+      return [
+        Number(snapshot.count) || 0,
+        String(snapshot.lastNodeId || ""),
+        String(snapshot.lastText || ""),
+        snapshot.lastPending ? "1" : "0"
+      ].join("|");
+    }
+
+    function getAttachmentSnapshotKey(snapshot) {
+      if (!snapshot || typeof snapshot !== "object") {
+        return "";
+      }
+
+      return [
+        Number(snapshot.attachmentCount) || 0,
+        Number(snapshot.fileInputCount) || 0,
+        snapshot.hasPendingAttachmentWork ? "1" : "0"
+      ].join("|");
+    }
+
+    function getSubmissionStateKey(state) {
+      if (!state || typeof state !== "object") {
+        return "";
+      }
+
+      return [
+        String(state.composerText || ""),
+        Number(state.attachmentCount) || 0,
+        Number(state.fileInputCount) || 0,
+        state.hasPendingAttachmentWork ? "1" : "0",
+        Number(state.userCount) || 0,
+        String(state.lastUserNodeId || ""),
+        Number(state.assistantCount) || 0,
+        String(state.lastAssistantNodeId || ""),
+        state.lastAssistantPending ? "1" : "0"
+      ].join("|");
+    }
+
+    function hasAttachmentSnapshot(snapshot) {
+      if (!snapshot || typeof snapshot !== "object") {
+        return false;
+      }
+
+      return Number(snapshot.attachmentCount) > 0 || Number(snapshot.fileInputCount) > 0;
+    }
+
+    function isAttachmentReadySnapshot(snapshot) {
+      return hasAttachmentSnapshot(snapshot) && !snapshot.hasPendingAttachmentWork;
+    }
+
     async function waitForAttachmentReady(composer, beforeSnapshot, timeoutMs) {
+      let observedSnapshot = beforeSnapshot;
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < timeoutMs) {
         const liveComposer = findComposer() || composer;
-        const scope = findComposerScope(liveComposer);
-        const attachmentCount = countAttachmentIndicators(scope);
-        const fileInputCount = countSelectedFiles(scope);
-        const attachmentAccepted = attachmentCount > beforeSnapshot.attachmentCount || fileInputCount > beforeSnapshot.fileInputCount;
-        const uploadPending = hasPendingAttachmentWork(scope);
+        const attachmentAccepted = observedSnapshot.attachmentCount > beforeSnapshot.attachmentCount
+          || observedSnapshot.fileInputCount > beforeSnapshot.fileInputCount;
 
-        if (attachmentAccepted && !uploadPending) {
+        if (attachmentAccepted && isAttachmentReadySnapshot(observedSnapshot)) {
           return liveComposer;
         }
 
-        await waitForNextStateTurn(timeoutMs - (Date.now() - startedAt));
+        const remainingTime = timeoutMs - (Date.now() - startedAt);
+
+        if (remainingTime <= 0) {
+          break;
+        }
+
+        const nextSnapshot = await waitForStateChange(
+          () => captureComposerAttachmentSnapshot(findComposer() || composer),
+          getAttachmentSnapshotKey,
+          observedSnapshot,
+          remainingTime,
+        );
+
+        if (!nextSnapshot) {
+          break;
+        }
+
+        observedSnapshot = nextSnapshot;
       }
 
-      return findComposer() || composer;
+      const finalComposer = findComposer() || composer;
+      return isAttachmentReadySnapshot(captureComposerAttachmentSnapshot(finalComposer)) ? finalComposer : null;
     }
 
     function isImageReadyForSubmit(composer) {
@@ -1062,34 +1426,23 @@
       };
     }
 
-    async function waitForAssistantResponse(previousSnapshot, timeoutMs) {
-      const domTracker = ensureDomActivityTracker();
+    async function waitForAssistantResponse(previousSnapshot, timeoutMs, reportProgress) {
+      let observedSnapshot = captureAssistantSnapshot();
+      let latestUsableSnapshot = null;
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < timeoutMs) {
-        const currentSnapshot = captureAssistantSnapshot();
-        const candidate = currentSnapshot.lastText;
-        const hasNewResponse = Boolean(candidate)
-          && (
-            currentSnapshot.count > previousSnapshot.count
-            || currentSnapshot.lastNodeId !== previousSnapshot.lastNodeId
-            || candidate !== previousSnapshot.lastText
-          );
+        if (isUsableAssistantSnapshot(observedSnapshot, previousSnapshot)) {
+          latestUsableSnapshot = observedSnapshot;
+        }
 
-        if (hasNewResponse) {
-          if (isTransientAssistantText(candidate) || currentSnapshot.lastPending) {
-            const remainingBusyTime = timeoutMs - (Date.now() - startedAt);
-
-            if (remainingBusyTime > 0) {
-              await domTracker.waitForChange(Math.min(RESPONSE_CHANGE_WAIT_MS, remainingBusyTime));
-            }
-
-            continue;
-          }
-
+        if (isFreshAssistantSnapshot(observedSnapshot, previousSnapshot) && isStableAssistantSnapshot(observedSnapshot)) {
+          const followUpProgressCallId = startAssistantResponseFollowUp(previousSnapshot, observedSnapshot);
+          reportAssistantSnapshotProgress(observedSnapshot, reportProgress);
           return {
-            text: candidate,
-            copied: false
+            text: observedSnapshot.lastText,
+            copied: false,
+            followUpProgressCallId
           };
         }
 
@@ -1099,24 +1452,171 @@
           break;
         }
 
-        await domTracker.waitForChange(Math.min(RESPONSE_CHANGE_WAIT_MS, remainingTime));
+        const nextSnapshot = await waitForStateChange(
+          () => captureAssistantSnapshot(),
+          getAssistantSnapshotKey,
+          observedSnapshot,
+          remainingTime,
+        );
+
+        if (!nextSnapshot) {
+          break;
+        }
+
+        observedSnapshot = nextSnapshot;
       }
 
       const finalSnapshot = captureAssistantSnapshot();
-      const finalCandidate = finalSnapshot.lastText;
-      const hasFinalResponse = Boolean(finalCandidate)
-        && (finalSnapshot.count > previousSnapshot.count || finalCandidate !== previousSnapshot.lastText)
-        && !isTransientAssistantText(finalCandidate)
-        && !finalSnapshot.lastPending;
-
-      if (hasFinalResponse) {
+      if (isFreshAssistantSnapshot(finalSnapshot, previousSnapshot) && isStableAssistantSnapshot(finalSnapshot)) {
+        const followUpProgressCallId = startAssistantResponseFollowUp(previousSnapshot, finalSnapshot);
+        reportAssistantSnapshotProgress(finalSnapshot, reportProgress);
         return {
-          text: finalCandidate,
-          copied: false
+          text: finalSnapshot.lastText,
+          copied: false,
+          followUpProgressCallId
+        };
+      }
+
+      if (isUsableAssistantSnapshot(finalSnapshot, previousSnapshot)) {
+        const followUpProgressCallId = startAssistantResponseFollowUp(previousSnapshot, finalSnapshot);
+        reportAssistantSnapshotProgress(finalSnapshot, reportProgress);
+        return {
+          text: finalSnapshot.lastText,
+          copied: false,
+          followUpProgressCallId
+        };
+      }
+
+      if (latestUsableSnapshot) {
+        const followUpProgressCallId = startAssistantResponseFollowUp(previousSnapshot, latestUsableSnapshot);
+        reportAssistantSnapshotProgress(latestUsableSnapshot, reportProgress);
+        return {
+          text: latestUsableSnapshot.lastText,
+          copied: false,
+          followUpProgressCallId
         };
       }
 
       throw new Error("A ChatGPT válasza nem érkezett meg időben.");
+    }
+
+    function startAssistantResponseFollowUp(previousSnapshot, initialSnapshot) {
+      const baseProgressCallId = String(payload.progressCallId || "").trim();
+
+      if (!baseProgressCallId || !isUsableAssistantSnapshot(initialSnapshot, previousSnapshot)) {
+        return "";
+      }
+
+      const followUpProgressCallId = `${baseProgressCallId}-followup`;
+      const domTracker = ensureDomActivityTracker();
+      const followUps = ensureAssistantResponseFollowUps();
+      const startUserCount = findUserMessageNodes().length;
+      const followUpState = {
+        stopped: false,
+        previousSnapshot,
+        latestText: String(initialSnapshot.lastText || ""),
+        latestNodeId: String(initialSnapshot.lastNodeId || ""),
+        startUserCount,
+        unsubscribe: null
+      };
+
+      stopAssistantResponseFollowUp(followUpProgressCallId, { emitDone: false });
+
+      const evaluateFollowUp = () => {
+        if (followUpState.stopped) {
+          return;
+        }
+
+        if (findUserMessageNodes().length > startUserCount) {
+          stopAssistantResponseFollowUp(followUpProgressCallId);
+          return;
+        }
+
+        const currentSnapshot = captureAssistantSnapshot();
+
+        if (!isUsableAssistantSnapshot(currentSnapshot, previousSnapshot)) {
+          return;
+        }
+
+        if (
+          currentSnapshot.lastText === followUpState.latestText
+          && currentSnapshot.lastNodeId === followUpState.latestNodeId
+        ) {
+          return;
+        }
+
+        followUpState.latestText = String(currentSnapshot.lastText || "");
+        followUpState.latestNodeId = String(currentSnapshot.lastNodeId || "");
+        writeProgressEntry(followUpProgressCallId, {
+          kind: "assistant_response",
+          text: currentSnapshot.lastText
+        });
+      };
+
+      followUpState.unsubscribe = domTracker.subscribe(evaluateFollowUp);
+      followUps[followUpProgressCallId] = followUpState;
+      return followUpProgressCallId;
+    }
+
+    function isFreshAssistantSnapshot(currentSnapshot, previousSnapshot) {
+      if (!currentSnapshot || typeof currentSnapshot !== "object") {
+        return false;
+      }
+
+      const candidate = currentSnapshot.lastText;
+      return Boolean(candidate)
+        && (
+          currentSnapshot.count > previousSnapshot.count
+          || currentSnapshot.lastNodeId !== previousSnapshot.lastNodeId
+          || candidate !== previousSnapshot.lastText
+        );
+    }
+
+    function isStableAssistantSnapshot(snapshot) {
+      const candidate = snapshot?.lastText;
+
+      if (!candidate) {
+        return false;
+      }
+
+      if (isTransientAssistantText(candidate)) {
+        return false;
+      }
+
+      return !snapshot.lastPending || isComposerBackInSendState();
+    }
+
+    function isUsableAssistantSnapshot(snapshot, previousSnapshot) {
+      return isFreshAssistantSnapshot(snapshot, previousSnapshot)
+        && Boolean(snapshot?.lastText)
+        && !isTransientAssistantText(snapshot.lastText);
+    }
+
+    function isComposerBackInSendState() {
+      const composer = findComposer();
+
+      if (!(composer instanceof HTMLElement)) {
+        return false;
+      }
+
+      const sendButton = findSendButton(composer, { allowDisabled: true });
+
+      if (!(sendButton instanceof HTMLButtonElement)) {
+        return false;
+      }
+
+      return !looksLikeNonSendAction(readButtonLabel(sendButton));
+    }
+
+    function reportAssistantSnapshotProgress(snapshot, reportProgress) {
+      if (typeof reportProgress !== "function" || !snapshot?.lastText) {
+        return;
+      }
+
+      reportProgress({
+        kind: "assistant_response",
+        text: snapshot.lastText
+      });
     }
 
     function isTransientAssistantText(text) {
@@ -1691,71 +2191,397 @@
         .trim();
     }
 
-    async function waitForSendTransition(beforeState, timeoutMs) {
-      const startedAt = Date.now();
+    function hasSubmissionTransition(beforeState, afterState) {
       const beforeComposerText = normalizePromptStructure(beforeState.composerText);
+      const afterComposerText = normalizePromptStructure(afterState.composerText);
+      const composerChanged = Boolean(beforeComposerText) && afterComposerText !== beforeComposerText;
+      const userMessageAppeared = afterState.userCount > beforeState.userCount
+        || (Boolean(afterState.lastUserNodeId) && afterState.lastUserNodeId !== beforeState.lastUserNodeId);
+      const assistantActivityStarted = afterState.assistantCount > beforeState.assistantCount
+        || (Boolean(afterState.lastAssistantNodeId) && afterState.lastAssistantNodeId !== beforeState.lastAssistantNodeId)
+        || (afterState.lastAssistantPending && !beforeState.lastAssistantPending);
+      const attachmentRemoved = afterState.attachmentCount < beforeState.attachmentCount
+        || afterState.fileInputCount < beforeState.fileInputCount;
 
-      while (Date.now() - startedAt < timeoutMs) {
-        const composer = findComposer();
-        const afterState = captureComposerSubmitState(composer);
-        const afterComposerText = normalizePromptStructure(afterState.composerText);
-        const composerChanged = Boolean(beforeComposerText) && afterComposerText !== beforeComposerText;
-        const userMessageAppeared = afterState.userCount > beforeState.userCount
-          || (Boolean(afterState.lastUserNodeId) && afterState.lastUserNodeId !== beforeState.lastUserNodeId);
-        const assistantActivityStarted = afterState.assistantCount > beforeState.assistantCount
-          || (Boolean(afterState.lastAssistantNodeId) && afterState.lastAssistantNodeId !== beforeState.lastAssistantNodeId)
-          || (afterState.lastAssistantPending && !beforeState.lastAssistantPending);
-
-        if (composerChanged || userMessageAppeared || assistantActivityStarted) {
-          return true;
-        }
-
-        if (afterState.attachmentCount < beforeState.attachmentCount || afterState.fileInputCount < beforeState.fileInputCount) {
-          return true;
-        }
-
-        if (isGenerationInProgress()) {
-          return true;
-        }
-
-        await waitForNextStateTurn(timeoutMs - (Date.now() - startedAt));
-      }
-
-      return false;
+      return composerChanged || userMessageAppeared || assistantActivityStarted || attachmentRemoved || isGenerationInProgress();
     }
 
-    async function waitForImageSendTransition(beforeState, composer, timeoutMs) {
+    function hasConfirmedSubmissionStart(beforeState, afterState) {
+      if (!afterState || typeof afterState !== "object") {
+        return false;
+      }
+
+      const beforeComposerText = normalizePromptStructure(beforeState.composerText);
+      const afterComposerText = normalizePromptStructure(afterState.composerText);
+      const composerChanged = Boolean(beforeComposerText) && afterComposerText !== beforeComposerText;
+      const userMessageAppeared = afterState.userCount > beforeState.userCount
+        || (Boolean(afterState.lastUserNodeId) && afterState.lastUserNodeId !== beforeState.lastUserNodeId);
+      const assistantActivityStarted = afterState.assistantCount > beforeState.assistantCount
+        || (Boolean(afterState.lastAssistantNodeId) && afterState.lastAssistantNodeId !== beforeState.lastAssistantNodeId)
+        || (afterState.lastAssistantPending && !beforeState.lastAssistantPending);
+      const generationStarted = Boolean(afterState.lastAssistantPending) || isGenerationInProgress();
+      const attachmentRemoved = afterState.attachmentCount < beforeState.attachmentCount
+        || afterState.fileInputCount < beforeState.fileInputCount;
+
+      return userMessageAppeared || assistantActivityStarted || generationStarted || attachmentRemoved || composerChanged;
+    }
+
+    function hasComposerPayloadState(state) {
+      if (!state || typeof state !== "object") {
+        return false;
+      }
+
+      return Boolean(normalizePromptStructure(state.composerText))
+        || Number(state.attachmentCount) > 0
+        || Number(state.fileInputCount) > 0;
+    }
+
+    function getComposerAutoRecoveryPayloadKey(submissionState) {
+      if (!submissionState || typeof submissionState !== "object") {
+        return "";
+      }
+
+      return [
+        normalizePromptStructure(submissionState.composerText),
+        Number(submissionState.attachmentCount) || 0,
+        Number(submissionState.fileInputCount) || 0,
+        submissionState.hasPendingAttachmentWork ? "1" : "0"
+      ].join("|");
+    }
+
+    function getComposerAutoRecoveryKey(composer, submissionState) {
+      const sendButton = findSendButton(composer, { allowDisabled: true });
+
+      return [
+        getComposerAutoRecoveryPayloadKey(submissionState),
+        isGenerationInProgress() ? "1" : "0",
+        sendButton instanceof HTMLButtonElement && sendButton.disabled ? "1" : "0",
+        sendButton instanceof HTMLButtonElement ? readButtonLabel(sendButton) : ""
+      ].join("|");
+    }
+
+    function isComposerAutoRecoveryReady(composer, submissionState) {
+      if (!(composer instanceof HTMLElement) || !hasComposerPayloadState(submissionState)) {
+        return false;
+      }
+
+      if (submissionState.hasPendingAttachmentWork || isGenerationInProgress()) {
+        return false;
+      }
+
+      const sendButton = findSendButton(composer, { allowDisabled: true });
+
+      if (!(sendButton instanceof HTMLButtonElement) || sendButton.disabled) {
+        return false;
+      }
+
+      if (looksLikeNonSendAction(readButtonLabel(sendButton))) {
+        return false;
+      }
+
+      if (hasAttachmentSnapshot(submissionState) && !isImageReadyForSubmit(composer)) {
+        return false;
+      }
+
+      return isComposerReadyForSubmit(composer);
+    }
+
+    function ensureComposerAutoRecoveryWatcher() {
+      const existingWatcher = window.__gamerTranslatorComposerAutoRecovery;
+
+      if (existingWatcher && typeof existingWatcher === "object" && typeof existingWatcher.requestEvaluation === "function") {
+        return existingWatcher;
+      }
+
+      const domTracker = ensureDomActivityTracker();
+      const watcherState = {
+        busy: false,
+        suspendedCount: 0,
+        queued: false,
+        armedPayloadKey: "",
+        lastAttemptKey: "",
+        unsubscribe: null,
+        requestEvaluation: null,
+      };
+
+      const resetWatcherState = () => {
+        watcherState.armedPayloadKey = "";
+        watcherState.lastAttemptKey = "";
+      };
+
+      const armComposerAutoRecovery = (composerCandidate) => {
+        const composer = findComposer() || composerCandidate;
+
+        if (!(composer instanceof HTMLElement)) {
+          return;
+        }
+
+        const submissionState = captureComposerSubmitState(composer);
+        const payloadKey = getComposerAutoRecoveryPayloadKey(submissionState);
+
+        if (!payloadKey) {
+          return;
+        }
+
+        watcherState.armedPayloadKey = payloadKey;
+        watcherState.lastAttemptKey = "";
+        watcherState.requestEvaluation();
+      };
+
+      const handleSubmitIntentClick = (event) => {
+        const target = event.target;
+        const composer = findComposer();
+
+        if (!(target instanceof Element) || !(composer instanceof HTMLElement)) {
+          return;
+        }
+
+        const clickedButton = target.closest("button");
+        const sendButton = findSendButton(composer, { allowDisabled: true });
+
+        if (!(clickedButton instanceof HTMLButtonElement) || !(sendButton instanceof HTMLButtonElement)) {
+          return;
+        }
+
+        if (clickedButton !== sendButton) {
+          return;
+        }
+
+        if (looksLikeNonSendAction(readButtonLabel(sendButton))) {
+          return;
+        }
+
+        armComposerAutoRecovery(composer);
+      };
+
+      const handleSubmitIntentForm = (event) => {
+        const composer = findComposer();
+        const form = event.target;
+
+        if (!(composer instanceof HTMLElement) || !(form instanceof HTMLFormElement)) {
+          return;
+        }
+
+        if (findClosestForm(composer) !== form) {
+          return;
+        }
+
+        armComposerAutoRecovery(composer);
+      };
+
+      const handleSubmitIntentKeyDown = (event) => {
+        const target = event.target;
+        const composer = findComposer();
+
+        if (
+          !(target instanceof Node)
+          || !(composer instanceof HTMLElement)
+          || event.key !== "Enter"
+          || event.shiftKey
+          || event.ctrlKey
+          || event.altKey
+          || event.metaKey
+          || event.isComposing
+        ) {
+          return;
+        }
+
+        const scope = findComposerScope(composer);
+
+        if (!(scope instanceof Element) || !scope.contains(target)) {
+          return;
+        }
+
+        if (isExpandedComposerEditor(composer)) {
+          return;
+        }
+
+        armComposerAutoRecovery(composer);
+      };
+
+      const evaluateComposerState = async () => {
+        if (watcherState.busy || watcherState.suspendedCount > 0) {
+          return;
+        }
+
+        const composer = findComposer();
+
+        if (!(composer instanceof HTMLElement)) {
+          resetWatcherState();
+          return;
+        }
+
+        const submissionState = captureComposerSubmitState(composer);
+
+        if (!hasComposerPayloadState(submissionState)) {
+          resetWatcherState();
+          return;
+        }
+
+        const payloadKey = getComposerAutoRecoveryPayloadKey(submissionState);
+
+        if (!payloadKey) {
+          resetWatcherState();
+          return;
+        }
+
+        if (!watcherState.armedPayloadKey) {
+          watcherState.lastAttemptKey = "";
+          return;
+        }
+
+        if (watcherState.armedPayloadKey !== payloadKey) {
+          resetWatcherState();
+          return;
+        }
+
+        const attemptKey = getComposerAutoRecoveryKey(composer, submissionState);
+
+        if (!isComposerAutoRecoveryReady(composer, submissionState)) {
+          return;
+        }
+
+        if (watcherState.lastAttemptKey === attemptKey) {
+          return;
+        }
+
+        watcherState.busy = true;
+        watcherState.lastAttemptKey = attemptKey;
+
+        try {
+          await window.__gamerTranslatorDeliver({
+            repairExistingComposerPayload: true,
+            autoSubmit: true,
+            copyResponseToClipboard: false,
+            pageReadyTimeoutMs: 15000,
+            responseTimeoutMs: 0
+          });
+        } catch (_error) {
+          // A sikertelen onjavito kuldes nem allithatja meg a tovabbi figyelest.
+        } finally {
+          watcherState.busy = false;
+
+          const liveComposer = findComposer();
+
+          if (!(liveComposer instanceof HTMLElement)) {
+            resetWatcherState();
+            return;
+          }
+
+          const liveSubmissionState = captureComposerSubmitState(liveComposer);
+
+          if (!hasComposerPayloadState(liveSubmissionState)) {
+            resetWatcherState();
+          } else if (getComposerAutoRecoveryPayloadKey(liveSubmissionState) !== watcherState.armedPayloadKey) {
+            resetWatcherState();
+          } else if (getComposerAutoRecoveryKey(liveComposer, liveSubmissionState) !== attemptKey) {
+            watcherState.lastAttemptKey = "";
+          }
+
+          watcherState.requestEvaluation();
+        }
+      };
+
+      watcherState.requestEvaluation = () => {
+        if (watcherState.queued) {
+          return;
+        }
+
+        watcherState.queued = true;
+        Promise.resolve().then(() => {
+          watcherState.queued = false;
+          evaluateComposerState().catch(() => {});
+        });
+      };
+
+      watcherState.unsubscribe = domTracker.subscribe(() => {
+        watcherState.requestEvaluation();
+      });
+      document.addEventListener("click", handleSubmitIntentClick, true);
+      document.addEventListener("submit", handleSubmitIntentForm, true);
+      document.addEventListener("keydown", handleSubmitIntentKeyDown, true);
+
+      window.__gamerTranslatorComposerAutoRecovery = watcherState;
+      watcherState.requestEvaluation();
+      return watcherState;
+    }
+
+    async function waitForSubmissionTransition(beforeState, composer, timeoutMs) {
+      let observedState = captureComposerSubmitState(findComposer() || composer);
+
+      if (hasSubmissionTransition(beforeState, observedState)) {
+        return true;
+      }
+
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < timeoutMs) {
-        const liveComposer = findComposer() || composer;
-        const afterState = captureComposerSubmitState(liveComposer);
-        const userMessageAppeared = afterState.userCount > beforeState.userCount
-          || (Boolean(afterState.lastUserNodeId) && afterState.lastUserNodeId !== beforeState.lastUserNodeId);
-        const assistantActivityStarted = afterState.assistantCount > beforeState.assistantCount
-          || (Boolean(afterState.lastAssistantNodeId) && afterState.lastAssistantNodeId !== beforeState.lastAssistantNodeId)
-          || (afterState.lastAssistantPending && !beforeState.lastAssistantPending);
+        const remainingTime = timeoutMs - (Date.now() - startedAt);
 
-        if (beforeState.attachmentCount > 0 && afterState.attachmentCount < beforeState.attachmentCount) {
-          return true;
+        if (remainingTime <= 0) {
+          break;
         }
 
-        if (beforeState.fileInputCount > 0 && afterState.fileInputCount < beforeState.fileInputCount) {
-          return true;
+        const nextState = await waitForStateChange(
+          () => captureComposerSubmitState(findComposer() || composer),
+          getSubmissionStateKey,
+          observedState,
+          remainingTime,
+        );
+
+        if (!nextState) {
+          break;
         }
 
-        if (userMessageAppeared || assistantActivityStarted) {
+        observedState = nextState;
+
+        if (hasSubmissionTransition(beforeState, observedState)) {
           return true;
         }
-
-        if (isGenerationInProgress()) {
-          return true;
-        }
-
-        await waitForNextStateTurn(timeoutMs - (Date.now() - startedAt));
       }
 
-      return false;
+      return hasSubmissionTransition(beforeState, captureComposerSubmitState(findComposer() || composer));
+    }
+
+    async function ensureSubmissionDelivered(composer, beforeState, attempts, failureMessage) {
+      let liveComposer = findComposer() || composer;
+      let afterState = captureComposerSubmitState(liveComposer);
+
+      if (hasConfirmedSubmissionStart(beforeState, afterState)) {
+        return;
+      }
+
+      if (hasSubmissionTransition(beforeState, afterState) && !hasComposerPayloadState(afterState)) {
+        return;
+      }
+
+      for (let checkIndex = 0; checkIndex < SELF_HEAL_CHECK_LIMIT; checkIndex += 1) {
+        const attempt = attempts[checkIndex % attempts.length];
+
+        if (!hasComposerPayloadState(afterState)) {
+          if (hasSubmissionTransition(beforeState, afterState) || hasConfirmedSubmissionStart(beforeState, afterState)) {
+            return;
+          }
+
+          break;
+        }
+
+        attempt.run(liveComposer);
+        await waitForSubmissionTransition(beforeState, liveComposer, attempt.timeoutMs);
+
+        liveComposer = findComposer() || liveComposer;
+        afterState = captureComposerSubmitState(liveComposer);
+
+        if (hasConfirmedSubmissionStart(beforeState, afterState)) {
+          return;
+        }
+
+        if (hasSubmissionTransition(beforeState, afterState) && !hasComposerPayloadState(afterState)) {
+          return;
+        }
+      }
+
+      throw new Error(failureMessage);
     }
 
     function fireClickSequence(element) {
@@ -1821,11 +2647,45 @@
 
     async function waitForNextStateTurn(timeoutMs) {
       const boundedTimeout = Math.max(FRAME_INTERVAL_MS, Number(timeoutMs) || FRAME_INTERVAL_MS);
+      await ensureDomActivityTracker().waitForChange(boundedTimeout);
+    }
+
+    async function waitForStateChange(readState, getStateKey, previousState, timeoutMs) {
+      const previousKey = typeof getStateKey === "function" ? getStateKey(previousState) : "";
       const domTracker = ensureDomActivityTracker();
-      await Promise.race([
-        wait(FRAME_INTERVAL_MS),
-        domTracker.waitForChange(Math.min(RESPONSE_CHANGE_WAIT_MS, boundedTimeout))
-      ]);
+      const startedAt = Date.now();
+
+      while (Date.now() - startedAt < timeoutMs) {
+        const currentState = readState();
+
+        if ((typeof getStateKey === "function" ? getStateKey(currentState) : "") !== previousKey) {
+          return currentState;
+        }
+
+        const remainingTime = timeoutMs - (Date.now() - startedAt);
+
+        if (remainingTime <= 0) {
+          break;
+        }
+
+        if (await domTracker.waitForChange(remainingTime) !== "change") {
+          break;
+        }
+      }
+
+      const finalState = readState();
+      return (typeof getStateKey === "function" ? getStateKey(finalState) : "") !== previousKey
+        ? finalState
+        : null;
     }
   };
+
+  window.__gamerTranslatorDeliverVersion = AUTOMATION_SCRIPT_VERSION;
+  window.__gamerTranslatorDeliver({
+    initializeComposerAutoRecovery: true,
+    autoSubmit: false,
+    copyResponseToClipboard: false,
+    pageReadyTimeoutMs: 15000,
+    responseTimeoutMs: 0
+  }).catch(() => {});
 })();

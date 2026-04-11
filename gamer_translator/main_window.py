@@ -54,6 +54,8 @@ BROWSER_CONSOLE_DEBUG = os.environ.get("GAMER_TRANSLATOR_DEBUG_BROWSER", "").str
 UI_FRAME_INTERVAL_MS = 20
 UI_FRAME_INTERVAL_SECONDS = UI_FRAME_INTERVAL_MS / 1000.0
 SCREEN_CLIP_ARM_TIMEOUT_SECONDS = 45.0
+AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS = 70000
+AUTOMATION_SCRIPT_VERSION = "2026-04-11-1"
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -1038,6 +1040,12 @@ class MainWindow(QMainWindow):
         self.clipboard_debounce_timer.setInterval(120)
         self.clipboard_debounce_timer.timeout.connect(self._poll_clipboard)
         self.clipboard.changed.connect(self._handle_clipboard_changed)
+        self.response_followup_progress_call_id = ""
+        self.response_followup_last_sequence = 0
+        self.response_followup_handler: Callable[[dict[str, Any]], None] | None = None
+        self.response_followup_timer = QTimer(self)
+        self.response_followup_timer.setInterval(180)
+        self.response_followup_timer.timeout.connect(self._poll_response_followup_progress)
 
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(1680, 980)
@@ -1749,10 +1757,11 @@ class MainWindow(QMainWindow):
                     (() => ({
                       readyState: document.readyState,
                       visibilityState: document.visibilityState,
-                      hasAutomation: typeof window.__gamerTranslatorDeliver === "function",
+                      hasAutomation: typeof window.__gamerTranslatorDeliver === "function"
+                        && window.__gamerTranslatorDeliverVersion === "%s",
                       keepAliveAt: Date.now()
                     }))()
-                """,
+                """ % AUTOMATION_SCRIPT_VERSION,
                 timeout_ms=4000,
             )
         except RuntimeError:
@@ -2186,8 +2195,24 @@ class MainWindow(QMainWindow):
             self._ensure_chatgpt_page_loaded(reload_if_open=False)
             self._ensure_automation_ready()
             delivery_payload, success_status_message, empty_response_status_message = self._build_translation_delivery_payload(payload)
+            progress_handler = None
+            progress_state = {
+                "last_text": "",
+                "notified": False,
+            }
 
-            result = self._execute_delivery(delivery_payload)
+            if delivery_payload.get("copyResponseToClipboard"):
+                progress_handler, progress_state = self._build_response_progress_handler(
+                    copy_to_clipboard=True,
+                    show_overlay=True,
+                    play_sound=True,
+                )
+
+            result = self._execute_delivery(delivery_payload, progress_handler=progress_handler)
+            follow_up_progress_call_id = str(result.get("followUpProgressCallId") or "").strip()
+
+            if follow_up_progress_call_id:
+                self._start_response_followup_polling(follow_up_progress_call_id, progress_handler)
 
             translated_text = str(result.get("assistantResponseText") or "").strip()
 
@@ -2197,12 +2222,13 @@ class MainWindow(QMainWindow):
                     self._save_last_run_status(empty_response_status_message)
                     return
 
-                self._store_translation_result(
-                    translated_text,
-                    copy_to_clipboard=True,
-                    show_overlay=True,
-                    play_sound=True,
-                )
+                if translated_text != str(progress_state["last_text"]):
+                    self._store_translation_result(
+                        translated_text,
+                        copy_to_clipboard=True,
+                        show_overlay=True,
+                        play_sound=not bool(progress_state["notified"]),
+                    )
                 self._save_last_run_status(f"A fordítás a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {self.settings.type_out_hotkey}")
                 return
 
@@ -2280,6 +2306,129 @@ class MainWindow(QMainWindow):
         cleaned_text = str(text or "").strip()
         return f"Quick chat text to translate:\n\n{cleaned_text}"
 
+    def _build_response_progress_handler(
+        self,
+        *,
+        copy_to_clipboard: bool,
+        show_overlay: bool,
+        play_sound: bool,
+    ) -> tuple[Callable[[dict[str, Any]], None], dict[str, Any]]:
+        state = {
+            "last_text": "",
+            "notified": False,
+        }
+
+        def handle_progress(progress: dict[str, Any]) -> None:
+            if str(progress.get("kind") or "") != "assistant_response":
+                return
+
+            translated_text = str(progress.get("text") or "").strip()
+
+            if not translated_text or translated_text == str(state["last_text"]):
+                return
+
+            self._store_translation_result(
+                translated_text,
+                copy_to_clipboard=copy_to_clipboard,
+                show_overlay=show_overlay,
+                play_sound=play_sound and not bool(state["notified"]),
+            )
+            state["last_text"] = translated_text
+            state["notified"] = True
+
+        return handle_progress, state
+
+    def _start_response_followup_polling(
+        self,
+        progress_call_id: str,
+        progress_handler: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        normalized_progress_call_id = str(progress_call_id or "").strip()
+        self._stop_response_followup_polling()
+
+        if not normalized_progress_call_id or progress_handler is None:
+            return
+
+        self.response_followup_progress_call_id = normalized_progress_call_id
+        self.response_followup_last_sequence = 0
+        self.response_followup_handler = progress_handler
+        self.response_followup_timer.start()
+
+    def _stop_response_followup_polling(self, *, stop_remote: bool = True) -> None:
+        current_progress_call_id = str(self.response_followup_progress_call_id or "").strip()
+
+        self.response_followup_timer.stop()
+        self.response_followup_progress_call_id = ""
+        self.response_followup_last_sequence = 0
+        self.response_followup_handler = None
+
+        if not stop_remote or not current_progress_call_id:
+            return
+
+        try:
+            self._run_javascript(
+                f"""
+                    (() => {{
+                      if (typeof window.__gamerTranslatorStopResponseFollowUp === "function") {{
+                        window.__gamerTranslatorStopResponseFollowUp("{current_progress_call_id}", {{ emitDone: false }});
+                      }}
+                      return true;
+                    }})()
+                """,
+                timeout_ms=3000,
+            )
+        except Exception:
+            pass
+
+    def _poll_response_followup_progress(self) -> None:
+        progress_call_id = str(self.response_followup_progress_call_id or "").strip()
+
+        if not progress_call_id:
+            self._stop_response_followup_polling(stop_remote=False)
+            return
+
+        try:
+            progress_json = self._run_javascript(
+                f"""
+                    (() => {{
+                      const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
+                      return progressBucket["{progress_call_id}"] ?? null;
+                    }})()
+                """,
+                timeout_ms=3000,
+            )
+        except Exception:
+            return
+
+        if not isinstance(progress_json, str) or not progress_json:
+            return
+
+        try:
+            progress = json.loads(progress_json)
+        except Exception:
+            return
+
+        progress_sequence = int(progress.get("seq") or 0)
+
+        if progress_sequence <= self.response_followup_last_sequence:
+            return
+
+        self.response_followup_last_sequence = progress_sequence
+
+        if bool(progress.get("done")):
+            self._stop_response_followup_polling(stop_remote=False)
+            return
+
+        progress_handler = self.response_followup_handler
+
+        if progress_handler is None:
+            return
+
+        try:
+            progress_handler(progress)
+        except Exception:
+            pass
+
     def _process_quick_chat_translation(self, prompt_text: str) -> None:
         cleaned_prompt = str(prompt_text or "").strip()
         self.settings = self._read_settings_from_form()
@@ -2308,6 +2457,11 @@ class MainWindow(QMainWindow):
             self._save_last_run_status("A gyors chat szöveg elküldése folyamatban.")
             self._ensure_chatgpt_page_loaded(reload_if_open=False)
             self._ensure_automation_ready()
+            progress_handler, progress_state = self._build_response_progress_handler(
+                copy_to_clipboard=True,
+                show_overlay=True,
+                play_sound=True,
+            )
             result = self._execute_delivery(
                 {
                     "prompt": self._build_quick_chat_translation_prompt(cleaned_prompt),
@@ -2318,8 +2472,14 @@ class MainWindow(QMainWindow):
                     "copyResponseToClipboard": True,
                     "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
                     "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
-                }
+                },
+                progress_handler=progress_handler,
             )
+            follow_up_progress_call_id = str(result.get("followUpProgressCallId") or "").strip()
+
+            if follow_up_progress_call_id:
+                self._start_response_followup_polling(follow_up_progress_call_id, progress_handler)
+
             translated_text = str(result.get("assistantResponseText") or "").strip()
 
             if not translated_text:
@@ -2328,12 +2488,13 @@ class MainWindow(QMainWindow):
                 self._save_last_run_status(message)
                 return
 
-            self._store_translation_result(
-                translated_text,
-                copy_to_clipboard=True,
-                show_overlay=True,
-                play_sound=True,
-            )
+            if translated_text != str(progress_state["last_text"]):
+                self._store_translation_result(
+                    translated_text,
+                    copy_to_clipboard=True,
+                    show_overlay=True,
+                    play_sound=not bool(progress_state["notified"]),
+                )
             self._save_last_run_status(
                 f"A gyors chat fordítása a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {self.settings.type_out_hotkey}"
             )
@@ -2882,27 +3043,43 @@ class MainWindow(QMainWindow):
         self._sync_browser_host_mode()
         self._sync_browser_runtime_state()
 
-        ready = self._run_javascript("typeof window.__gamerTranslatorDeliver === 'function';", timeout_ms=5000)
+        ready = self._run_javascript(
+            f"typeof window.__gamerTranslatorDeliver === 'function' && window.__gamerTranslatorDeliverVersion === '{AUTOMATION_SCRIPT_VERSION}';",
+            timeout_ms=5000,
+        )
 
         if ready is True:
             self.automation_ready = True
             return
 
         self._run_javascript(self.automation_script, timeout_ms=10000)
-        ready = self._run_javascript("typeof window.__gamerTranslatorDeliver === 'function';", timeout_ms=5000)
+        ready = self._run_javascript(
+            f"typeof window.__gamerTranslatorDeliver === 'function' && window.__gamerTranslatorDeliverVersion === '{AUTOMATION_SCRIPT_VERSION}';",
+            timeout_ms=5000,
+        )
 
         if ready is not True:
             raise RuntimeError("Nem sikerült betölteni az oldalautomatizálást.")
 
         self.automation_ready = True
 
-    def _execute_delivery(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _execute_delivery(
+        self,
+        payload: dict[str, Any],
+        *,
+        progress_handler: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        self._stop_response_followup_polling()
         self._ensure_automation_ready()
         call_id = uuid.uuid4().hex
-        payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+        progress_call_id = f"{call_id}-progress"
+        payload_with_progress = dict(payload)
+        payload_with_progress["progressCallId"] = progress_call_id
+        payload_json = json.dumps(payload_with_progress, ensure_ascii=False).replace("</", "<\\/")
         launch_script = f"""
             (() => {{
               window.__gamerTranslatorResults = window.__gamerTranslatorResults || Object.create(null);
+              window.__gamerTranslatorProgress = window.__gamerTranslatorProgress || Object.create(null);
               window.__gamerTranslatorDeliver({payload_json})
                 .then((result) => {{
                   window.__gamerTranslatorResults["{call_id}"] = JSON.stringify(result);
@@ -2918,26 +3095,53 @@ class MainWindow(QMainWindow):
         """
         self._run_javascript(launch_script, timeout_ms=5000)
 
-        timeout_ms = int(payload.get("pageReadyTimeoutMs", self.settings.page_ready_timeout_ms)) + int(payload.get("responseTimeoutMs", DEFAULT_RESPONSE_TIMEOUT_MS)) + 10000
+        timeout_ms = (
+            int(payload.get("pageReadyTimeoutMs", self.settings.page_ready_timeout_ms))
+            + int(payload.get("responseTimeoutMs", DEFAULT_RESPONSE_TIMEOUT_MS))
+            + AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS
+        )
         started_at = time.monotonic()
+        last_progress_sequence = 0
 
         while (time.monotonic() - started_at) * 1000 < timeout_ms:
-            result_json = self._run_javascript(
+            state_json = self._run_javascript(
                 f"""
                     (() => {{
-                      const bucket = window.__gamerTranslatorResults || Object.create(null);
-                      const value = bucket["{call_id}"];
+                      const resultBucket = window.__gamerTranslatorResults || Object.create(null);
+                      const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
+                      const resultValue = resultBucket["{call_id}"];
+                      const progressValue = progressBucket["{progress_call_id}"] ?? null;
 
-                      if (value === undefined) {{
-                        return null;
+                      if (resultValue !== undefined) {{
+                        delete resultBucket["{call_id}"];
+                        delete progressBucket["{progress_call_id}"];
                       }}
 
-                      delete bucket["{call_id}"];
-                      return value;
+                      return JSON.stringify({{
+                        result: resultValue === undefined ? null : resultValue,
+                        progress: progressValue
+                      }});
                     }})()
                 """,
                 timeout_ms=5000,
             )
+
+            state = json.loads(state_json) if isinstance(state_json, str) and state_json else {}
+            progress_json = state.get("progress")
+
+            if isinstance(progress_json, str) and progress_json and progress_handler is not None:
+                progress = json.loads(progress_json)
+                progress_sequence = int(progress.get("seq") or 0)
+
+                if progress_sequence > last_progress_sequence:
+                    last_progress_sequence = progress_sequence
+
+                    try:
+                        progress_handler(progress)
+                    except Exception:
+                        pass
+
+            result_json = state.get("result")
 
             if isinstance(result_json, str) and result_json:
                 result = json.loads(result_json)
