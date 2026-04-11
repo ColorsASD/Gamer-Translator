@@ -53,9 +53,16 @@ from .settings_store import AppSettings, LastRunStatus, SettingsStore
 BROWSER_CONSOLE_DEBUG = os.environ.get("GAMER_TRANSLATOR_DEBUG_BROWSER", "").strip() == "1"
 UI_FRAME_INTERVAL_MS = 20
 UI_FRAME_INTERVAL_SECONDS = UI_FRAME_INTERVAL_MS / 1000.0
+GAME_MODE_BACKGROUND_FRAME_INTERVAL_MS = 40
+IDLE_FRAME_INTERVAL_MS = 60
+BACKGROUND_IDLE_FRAME_INTERVAL_MS = 250
+SUSPENDED_FRAME_INTERVAL_MS = 1200
+BACKGROUND_TASK_EVENT_INTERVAL_SECONDS = 0.04
 SCREEN_CLIP_ARM_TIMEOUT_SECONDS = 45.0
 AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS = 70000
-AUTOMATION_SCRIPT_VERSION = "2026-04-11-1"
+AUTOMATION_SCRIPT_VERSION = "2026-04-11-2"
+INTERACTION_HEARTBEAT_INTERVAL_MS = 250
+INTERACTION_STALE_RESET_SECONDS = 8.0
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -1000,7 +1007,10 @@ class MainWindow(QMainWindow):
         self.tray_message_shown = False
         self.browser_background_mode = False
         self.browser_interaction_active = False
+        self.browser_interaction_heartbeat_monotonic = 0.0
+        self.clipboard_translation_heartbeat_monotonic = 0.0
         self.frame_pulse_state = False
+        self.current_browser_refresh_interval_ms = UI_FRAME_INTERVAL_MS
         self.browser_keepalive_failures = 0
         self.tray_icon: QSystemTrayIcon | None = None
         self.tray_toggle_action: QAction | None = None
@@ -1022,7 +1032,7 @@ class MainWindow(QMainWindow):
         self._build_browser()
         self.browser_refresh_timer = QTimer(self)
         self.browser_refresh_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.browser_refresh_timer.setInterval(UI_FRAME_INTERVAL_MS)
+        self.browser_refresh_timer.setInterval(self.current_browser_refresh_interval_ms)
         self.browser_refresh_timer.timeout.connect(self._refresh_browser_view)
         self.browser_refresh_timer.start()
         self._build_ui()
@@ -1034,6 +1044,8 @@ class MainWindow(QMainWindow):
 
         self.clipboard = QGuiApplication.clipboard()
         self.last_seen_image_signature = self._current_clipboard_signature()
+        self.pending_clipboard_payload: dict[str, Any] | None = None
+        self.pending_clipboard_check_requested = False
         self.screen_clip_hotkey_armed_until = 0.0
         self.clipboard_debounce_timer = QTimer(self)
         self.clipboard_debounce_timer.setSingleShot(True)
@@ -1046,6 +1058,10 @@ class MainWindow(QMainWindow):
         self.response_followup_timer = QTimer(self)
         self.response_followup_timer.setInterval(180)
         self.response_followup_timer.timeout.connect(self._poll_response_followup_progress)
+        self.interaction_watchdog_timer = QTimer(self)
+        self.interaction_watchdog_timer.setInterval(1000)
+        self.interaction_watchdog_timer.timeout.connect(self._recover_stuck_interaction_flags)
+        self.interaction_watchdog_timer.start()
 
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(1680, 980)
@@ -1186,6 +1202,7 @@ class MainWindow(QMainWindow):
         self.overlay_duration_seconds.setMinimum(1)
         self.overlay_duration_seconds.setSuffix(" mp")
         self.keep_chatgpt_in_background = QCheckBox("A ChatGPT maradjon háttérben, ne kapjon fókuszt")
+        self.game_mode_enabled = QCheckBox("Játék mód csökkentse a háttérterhelést")
         self.page_ready_timeout_ms = self._build_spin_box(maximum=120000, step=1000)
 
         overlay_opacity_row = QWidget()
@@ -1208,6 +1225,7 @@ class MainWindow(QMainWindow):
         form_layout.addRow("", self.quick_chat_hotkey_enabled)
         form_layout.addRow("Gyors chat gyorsbillentyű", self.quick_chat_hotkey)
         form_layout.addRow("", self.keep_chatgpt_in_background)
+        form_layout.addRow("", self.game_mode_enabled)
         form_layout.addRow("Overlay láthatósága", overlay_opacity_row)
         form_layout.addRow("Overlay megjelenési ideje (másodperc)", self.overlay_duration_seconds)
 
@@ -1704,6 +1722,7 @@ class MainWindow(QMainWindow):
             return
         finally:
             self._sync_browser_placeholder()
+            self._update_browser_refresh_timer()
 
     def _should_keep_system_awake(self) -> bool:
         return self.settings.monitoring_enabled
@@ -1736,6 +1755,9 @@ class MainWindow(QMainWindow):
             return False
 
         if not self.settings.monitoring_enabled or not self.settings.keep_chatgpt_in_background:
+            return False
+
+        if self.settings.game_mode_enabled:
             return False
 
         if not (self.browser_background_mode or self._is_window_hidden_for_tray()):
@@ -2055,9 +2077,12 @@ class MainWindow(QMainWindow):
         self.settings = self._read_settings_from_form()
         self.store.save_settings(self.settings)
         self.translation_overlay.set_overlay_opacity_percent(self.settings.overlay_opacity_percent)
+        if self.settings.game_mode_enabled:
+            self._hide_translation_overlay()
         self._register_hotkeys()
         self._refresh_system_keep_awake()
         self._sync_browser_host_mode()
+        self._update_browser_refresh_timer(force=True)
         QTimer.singleShot(0, self._sync_browser_runtime_state)
         if previous_settings.webview_gpu_acceleration_enabled != self.settings.webview_gpu_acceleration_enabled:
             self._set_live_status(self._hotkey_status_message("Beállítások elmentve. A program újraindul."))
@@ -2072,9 +2097,12 @@ class MainWindow(QMainWindow):
         self._apply_settings_to_form(self.settings)
         self.store.save_settings(self.settings)
         self.translation_overlay.set_overlay_opacity_percent(self.settings.overlay_opacity_percent)
+        if self.settings.game_mode_enabled:
+            self._hide_translation_overlay()
         self._register_hotkeys()
         self._refresh_system_keep_awake()
         self._sync_browser_host_mode()
+        self._update_browser_refresh_timer(force=True)
         QTimer.singleShot(0, self._sync_browser_runtime_state)
         if previous_settings.webview_gpu_acceleration_enabled != self.settings.webview_gpu_acceleration_enabled:
             self._set_live_status(self._hotkey_status_message("Az alapértékek vissza lettek állítva. A program újraindul."))
@@ -2171,6 +2199,15 @@ class MainWindow(QMainWindow):
             return
 
         if self.clipboard_translation_in_progress:
+            self.pending_clipboard_check_requested = True
+            pending_payload = self._read_clipboard_image_payload()
+
+            if pending_payload:
+                self.pending_clipboard_payload = pending_payload
+
+                if self._is_screen_clip_hotkey_armed():
+                    self._clear_screen_clip_hotkey_arm()
+
             return
 
         self.clipboard_debounce_timer.start()
@@ -2187,6 +2224,7 @@ class MainWindow(QMainWindow):
             return
 
         self.clipboard_translation_in_progress = True
+        self._touch_clipboard_translation_heartbeat()
         self._begin_browser_interaction()
 
         try:
@@ -2249,7 +2287,27 @@ class MainWindow(QMainWindow):
             self._set_live_status(str(error))
         finally:
             self.clipboard_translation_in_progress = False
+            self.clipboard_translation_heartbeat_monotonic = 0.0
             self._end_browser_interaction()
+
+            pending_payload = self.pending_clipboard_payload
+            self.pending_clipboard_payload = None
+            pending_check_requested = self.pending_clipboard_check_requested
+            self.pending_clipboard_check_requested = False
+
+            if pending_payload:
+                pending_signature = str(pending_payload.get("imageSignature") or "")
+
+                if pending_signature and pending_signature != self.last_seen_image_signature:
+                    self.last_seen_image_signature = pending_signature
+                    QTimer.singleShot(
+                        0,
+                        lambda queued_payload=pending_payload: self._process_clipboard_translation(queued_payload),
+                    )
+                return
+
+            if pending_check_requested:
+                self.clipboard_debounce_timer.start()
 
     def _build_translation_delivery_payload(self, payload: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
         if self.settings.ocr_text_from_clipboard_image:
@@ -2535,12 +2593,18 @@ class MainWindow(QMainWindow):
         last_status_update = 0.0
 
         while not future.done():
+            if self.browser_interaction_active:
+                self._touch_browser_interaction_heartbeat()
+
+            if self.clipboard_translation_in_progress:
+                self._touch_clipboard_translation_heartbeat()
+
             if progress_message and time.monotonic() - last_status_update >= 0.35:
                 self._set_live_status(progress_message)
                 last_status_update = time.monotonic()
 
             QGuiApplication.processEvents()
-            time.sleep(UI_FRAME_INTERVAL_SECONDS)
+            time.sleep(BACKGROUND_TASK_EVENT_INTERVAL_SECONDS)
 
         return future.result()
 
@@ -2587,6 +2651,9 @@ class MainWindow(QMainWindow):
         self._sync_browser_placeholder()
 
     def _should_show_translation_overlay(self) -> bool:
+        if self.settings.game_mode_enabled:
+            return False
+
         return self._is_window_hidden_for_tray() or self.browser_background_mode
 
     def _show_loading_overlay(self) -> None:
@@ -2611,9 +2678,47 @@ class MainWindow(QMainWindow):
 
         self.browser_status_placeholder.hide()
 
+    def _target_browser_refresh_interval_ms(self) -> int:
+        hidden_for_tray = self._is_window_hidden_for_tray()
+        window_visible = self.isVisible() and not self.isMinimized()
+
+        if self.page_loading:
+            return UI_FRAME_INTERVAL_MS
+
+        if self.browser_interaction_active or self.clipboard_translation_in_progress:
+            if self.settings.game_mode_enabled and hidden_for_tray:
+                return GAME_MODE_BACKGROUND_FRAME_INTERVAL_MS
+
+            return UI_FRAME_INTERVAL_MS
+
+        if window_visible and not self.browser_background_mode:
+            return IDLE_FRAME_INTERVAL_MS
+
+        if self.browser_background_mode:
+            return BACKGROUND_IDLE_FRAME_INTERVAL_MS
+
+        return SUSPENDED_FRAME_INTERVAL_MS
+
+    def _update_browser_refresh_timer(self, *, force: bool = False) -> None:
+        if not hasattr(self, "browser_refresh_timer"):
+            return
+
+        target_interval_ms = self._target_browser_refresh_interval_ms()
+
+        if not force and self.current_browser_refresh_interval_ms == target_interval_ms:
+            return
+
+        self.current_browser_refresh_interval_ms = target_interval_ms
+        self.browser_refresh_timer.setInterval(target_interval_ms)
+
+        if not self.browser_refresh_timer.isActive():
+            self.browser_refresh_timer.start()
+
     def _refresh_browser_view(self) -> None:
         if not hasattr(self, "browser"):
             return
+
+        self._update_browser_refresh_timer()
 
         if hasattr(self, "frame_pulse_dot") and self.isVisible() and not self.isMinimized():
             self.frame_pulse_state = not self.frame_pulse_state
@@ -2636,13 +2741,52 @@ class MainWindow(QMainWindow):
 
     def _begin_browser_interaction(self) -> None:
         self.browser_interaction_active = True
+        self._touch_browser_interaction_heartbeat()
         self._sync_browser_host_mode()
         self._sync_browser_runtime_state()
 
     def _end_browser_interaction(self) -> None:
         self.browser_interaction_active = False
+        self.browser_interaction_heartbeat_monotonic = 0.0
         self._sync_browser_host_mode()
         self._sync_browser_runtime_state()
+
+    def _touch_browser_interaction_heartbeat(self) -> None:
+        self.browser_interaction_heartbeat_monotonic = time.monotonic()
+
+    def _touch_clipboard_translation_heartbeat(self) -> None:
+        self.clipboard_translation_heartbeat_monotonic = time.monotonic()
+
+    def _recover_stuck_interaction_flags(self) -> None:
+        now = time.monotonic()
+        reset_browser_interaction = (
+            self.browser_interaction_active
+            and not self.page_loading
+            and self.browser_interaction_heartbeat_monotonic > 0.0
+            and now - self.browser_interaction_heartbeat_monotonic >= INTERACTION_STALE_RESET_SECONDS
+        )
+        reset_clipboard_translation = (
+            self.clipboard_translation_in_progress
+            and self.clipboard_translation_heartbeat_monotonic > 0.0
+            and now - self.clipboard_translation_heartbeat_monotonic >= INTERACTION_STALE_RESET_SECONDS
+        )
+
+        if not reset_browser_interaction and not reset_clipboard_translation:
+            return
+
+        if reset_browser_interaction:
+            self.browser_interaction_active = False
+            self.browser_interaction_heartbeat_monotonic = 0.0
+
+        if reset_clipboard_translation:
+            self.clipboard_translation_in_progress = False
+            self.clipboard_translation_heartbeat_monotonic = 0.0
+            self._hide_translation_overlay()
+
+        self._stop_response_followup_polling()
+        self._sync_browser_host_mode()
+        self._sync_browser_runtime_state()
+        self._set_live_status("A beragadt ChatGPT művelet állapota visszaállítva lett.")
 
     def _register_hotkeys(self) -> None:
         if sys.platform != "win32":
@@ -2914,6 +3058,7 @@ class MainWindow(QMainWindow):
         self.screen_clip_hotkey_enabled.setChecked(settings.screen_clip_hotkey_enabled)
         self.quick_chat_hotkey_enabled.setChecked(settings.quick_chat_hotkey_enabled)
         self.keep_chatgpt_in_background.setChecked(settings.keep_chatgpt_in_background)
+        self.game_mode_enabled.setChecked(settings.game_mode_enabled)
         self._set_hotkey_value(self.screen_clip_hotkey, settings.screen_clip_hotkey)
         self._set_hotkey_value(self.type_out_hotkey, settings.type_out_hotkey)
         self._set_hotkey_value(self.quick_chat_hotkey, settings.quick_chat_hotkey)
@@ -2926,6 +3071,7 @@ class MainWindow(QMainWindow):
             monitoring_enabled=True,
             chatgpt_url=CHATGPT_URL,
             keep_chatgpt_in_background=self.keep_chatgpt_in_background.isChecked(),
+            game_mode_enabled=self.game_mode_enabled.isChecked(),
             prompt_template=self.prompt_template.toPlainText().strip() or str(DEFAULT_SETTINGS["promptTemplate"]),
             auto_submit=True,
             copy_response_to_clipboard=self.copy_response_to_clipboard.isChecked(),
@@ -3104,6 +3250,7 @@ class MainWindow(QMainWindow):
         last_progress_sequence = 0
 
         while (time.monotonic() - started_at) * 1000 < timeout_ms:
+            self._touch_browser_interaction_heartbeat()
             state_json = self._run_javascript(
                 f"""
                     (() => {{
@@ -3162,6 +3309,9 @@ class MainWindow(QMainWindow):
         loop = QEventLoop(self)
         timer = QTimer(self)
         timer.setSingleShot(True)
+        heartbeat_timer = QTimer(self)
+        heartbeat_timer.setInterval(INTERACTION_HEARTBEAT_INTERVAL_MS)
+        heartbeat_timer.timeout.connect(self._touch_browser_interaction_heartbeat)
 
         def finish(*_args: object) -> None:
             if loop.isRunning():
@@ -3170,7 +3320,9 @@ class MainWindow(QMainWindow):
         timer.timeout.connect(finish)
         self.browser.loadFinished.connect(finish)
         timer.start(timeout_ms)
+        heartbeat_timer.start()
         loop.exec()
+        heartbeat_timer.stop()
 
         try:
             self.browser.loadFinished.disconnect(finish)
@@ -3185,6 +3337,15 @@ class MainWindow(QMainWindow):
         loop = QEventLoop(self)
         timer = QTimer(self)
         timer.setSingleShot(True)
+        heartbeat_timer = QTimer(self)
+        heartbeat_timer.setInterval(INTERACTION_HEARTBEAT_INTERVAL_MS)
+
+        def touch_interaction_heartbeat() -> None:
+            if self.browser_interaction_active:
+                self._touch_browser_interaction_heartbeat()
+
+            if self.clipboard_translation_in_progress:
+                self._touch_clipboard_translation_heartbeat()
 
         def handle_result(result: Any) -> None:
             result_box["done"] = True
@@ -3197,9 +3358,12 @@ class MainWindow(QMainWindow):
                 loop.quit()
 
         timer.timeout.connect(handle_timeout)
+        heartbeat_timer.timeout.connect(touch_interaction_heartbeat)
         timer.start(timeout_ms)
+        heartbeat_timer.start()
         self.browser.page().runJavaScript(script, handle_result)
         loop.exec()
+        heartbeat_timer.stop()
 
         if not result_box["done"]:
             raise RuntimeError("A JavaScript futtatása időtúllépéssel megszakadt.")

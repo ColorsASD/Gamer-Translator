@@ -1,5 +1,5 @@
 (() => {
-  const AUTOMATION_SCRIPT_VERSION = "2026-04-11-1";
+  const AUTOMATION_SCRIPT_VERSION = "2026-04-11-2";
   const FRAME_INTERVAL_MS = 20;
   const SELF_HEAL_CHECK_LIMIT = 5;
   const DOM_TEXT_BLOCK_TAGS = new Set([
@@ -523,13 +523,14 @@
         payload.imageFilename || "snip.png",
         payload.imageMimeType || "image/png"
       );
+      const expectedFileKey = describeSelectedFile(file);
       let attachAttemptStarted = false;
 
       for (let checkIndex = 0; checkIndex < SELF_HEAL_CHECK_LIMIT; checkIndex += 1) {
         composer = findComposer() || composer;
         const currentSnapshot = captureComposerAttachmentSnapshot(composer);
 
-        if (isAttachmentReadySnapshot(currentSnapshot)) {
+        if (isAttachmentReadySnapshot(currentSnapshot) && snapshotHasExpectedFile(currentSnapshot, expectedFileKey)) {
           return composer;
         }
 
@@ -598,6 +599,11 @@
 
       const transfer = new DataTransfer();
       transfer.items.add(file);
+      try {
+        fileInput.value = "";
+      } catch (_error) {
+        // Nem minden böngésző engedi a value közvetlen törlését.
+      }
       fileInput.files = transfer.files;
       fileInput.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
       fileInput.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
@@ -649,7 +655,10 @@
         bytes[index] = binary.charCodeAt(index);
       }
 
-      return new File([bytes], filename, { type: mimeType || "image/png" });
+      return new File([bytes], filename, {
+        type: mimeType || "image/png",
+        lastModified: Date.now()
+      });
     }
 
     async function submitTextMessage(composer, options = {}) {
@@ -1072,12 +1081,15 @@
 
     function captureComposerAttachmentSnapshot(composer) {
       const scope = findComposerScope(composer);
-      const attachmentCount = countAttachmentIndicators(scope);
-      const fileInputCount = countSelectedFiles(scope);
+      const attachmentIndicators = collectAttachmentIndicators(scope);
+      const selectedFileKeys = collectSelectedFileKeys(scope);
 
       return {
-        attachmentCount,
-        fileInputCount,
+        attachmentCount: attachmentIndicators.length,
+        attachmentIndicatorKey: attachmentIndicators.map((element) => describeAttachmentIndicator(element)).join("||"),
+        fileInputCount: selectedFileKeys.length,
+        fileSelectionKey: selectedFileKeys.join("||"),
+        selectedFileKeys,
         hasPendingAttachmentWork: hasPendingAttachmentWork(scope),
       };
     }
@@ -1125,7 +1137,9 @@
 
       return [
         Number(snapshot.attachmentCount) || 0,
+        String(snapshot.attachmentIndicatorKey || ""),
         Number(snapshot.fileInputCount) || 0,
+        String(snapshot.fileSelectionKey || ""),
         snapshot.hasPendingAttachmentWork ? "1" : "0"
       ].join("|");
     }
@@ -1162,11 +1176,15 @@
 
     async function waitForAttachmentReady(composer, beforeSnapshot, timeoutMs) {
       let observedSnapshot = beforeSnapshot;
+      const beforeKey = getAttachmentSnapshotKey(beforeSnapshot);
+      let attachmentAccepted = false;
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < timeoutMs) {
         const liveComposer = findComposer() || composer;
-        const attachmentAccepted = observedSnapshot.attachmentCount > beforeSnapshot.attachmentCount
+        attachmentAccepted = attachmentAccepted
+          || getAttachmentSnapshotKey(observedSnapshot) !== beforeKey
+          || observedSnapshot.attachmentCount > beforeSnapshot.attachmentCount
           || observedSnapshot.fileInputCount > beforeSnapshot.fileInputCount;
 
         if (attachmentAccepted && isAttachmentReadySnapshot(observedSnapshot)) {
@@ -1194,7 +1212,9 @@
       }
 
       const finalComposer = findComposer() || composer;
-      return isAttachmentReadySnapshot(captureComposerAttachmentSnapshot(finalComposer)) ? finalComposer : null;
+      const finalSnapshot = captureComposerAttachmentSnapshot(finalComposer);
+      attachmentAccepted = attachmentAccepted || getAttachmentSnapshotKey(finalSnapshot) !== beforeKey;
+      return attachmentAccepted && isAttachmentReadySnapshot(finalSnapshot) ? finalComposer : null;
     }
 
     function isImageReadyForSubmit(composer) {
@@ -1276,8 +1296,12 @@
     }
 
     function countAttachmentIndicators(scope) {
+      return collectAttachmentIndicators(scope).length;
+    }
+
+    function collectAttachmentIndicators(scope) {
       if (!(scope instanceof Element)) {
-        return 0;
+        return [];
       }
 
       const selectors = [
@@ -1292,18 +1316,69 @@
       ];
 
       const matches = selectors.flatMap((selector) => Array.from(scope.querySelectorAll(selector)));
-      const uniqueVisibleMatches = Array.from(new Set(matches)).filter((element) => isTrackableAttachmentIndicator(element));
+      return Array.from(new Set(matches)).filter((element) => isTrackableAttachmentIndicator(element));
+    }
 
-      return uniqueVisibleMatches.length;
+    function describeAttachmentIndicator(element) {
+      if (!(element instanceof HTMLElement)) {
+        return "";
+      }
+
+      const imageSource = element instanceof HTMLImageElement
+        ? element.currentSrc || element.getAttribute("src") || ""
+        : "";
+      const className = typeof element.className === "string"
+        ? element.className.trim().split(/\s+/).filter(Boolean).sort().join(".")
+        : "";
+      const text = normalizeStructuredDomText(readStructuredDomText(element)).slice(0, 160);
+
+      return [
+        element.tagName.toLowerCase(),
+        imageSource,
+        String(element.getAttribute("data-testid") || ""),
+        String(element.getAttribute("aria-label") || ""),
+        String(element.getAttribute("title") || ""),
+        className,
+        text
+      ].join("|");
     }
 
     function countSelectedFiles(scope) {
+      return collectSelectedFileKeys(scope).length;
+    }
+
+    function collectSelectedFileKeys(scope) {
       if (!(scope instanceof Element)) {
-        return 0;
+        return [];
       }
 
       return Array.from(scope.querySelectorAll('input[type="file"]'))
-        .reduce((count, input) => count + ((input instanceof HTMLInputElement && input.files?.length) ? input.files.length : 0), 0);
+        .flatMap((input) => (
+          input instanceof HTMLInputElement && input.files?.length
+            ? Array.from(input.files).map((file) => describeSelectedFile(file))
+            : []
+        ));
+    }
+
+    function describeSelectedFile(file) {
+      if (!(file instanceof File)) {
+        return "";
+      }
+
+      return [
+        String(file.name || ""),
+        Number(file.size) || 0,
+        String(file.type || ""),
+        Number(file.lastModified) || 0
+      ].join(":");
+    }
+
+    function snapshotHasExpectedFile(snapshot, expectedFileKey) {
+      if (!snapshot || typeof snapshot !== "object" || !expectedFileKey) {
+        return false;
+      }
+
+      return Array.isArray(snapshot.selectedFileKeys) && snapshot.selectedFileKeys.includes(expectedFileKey);
     }
 
     function hasPendingAttachmentWork(scope) {

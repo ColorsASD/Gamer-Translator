@@ -40,6 +40,7 @@ class AppSettings:
     monitoring_enabled: bool = bool(DEFAULT_SETTINGS["monitoringEnabled"])
     chatgpt_url: str = str(DEFAULT_SETTINGS["chatgptUrl"])
     keep_chatgpt_in_background: bool = bool(DEFAULT_SETTINGS["keepChatGptInBackground"])
+    game_mode_enabled: bool = bool(DEFAULT_SETTINGS["gameModeEnabled"])
     prompt_template: str = str(DEFAULT_SETTINGS["promptTemplate"])
     auto_submit: bool = bool(DEFAULT_SETTINGS["autoSubmit"])
     copy_response_to_clipboard: bool = bool(DEFAULT_SETTINGS["copyResponseToClipboard"])
@@ -89,6 +90,7 @@ class AppSettings:
             monitoring_enabled=bool(raw.get("monitoringEnabled", DEFAULT_SETTINGS["monitoringEnabled"])),
             chatgpt_url=str(raw.get("chatgptUrl", DEFAULT_SETTINGS["chatgptUrl"]) or DEFAULT_SETTINGS["chatgptUrl"]),
             keep_chatgpt_in_background=bool(raw.get("keepChatGptInBackground", DEFAULT_SETTINGS["keepChatGptInBackground"])),
+            game_mode_enabled=bool(raw.get("gameModeEnabled", DEFAULT_SETTINGS["gameModeEnabled"])),
             prompt_template=prompt_template,
             auto_submit=True,
             copy_response_to_clipboard=bool(raw.get("copyResponseToClipboard", DEFAULT_SETTINGS["copyResponseToClipboard"])),
@@ -111,6 +113,7 @@ class AppSettings:
             "monitoringEnabled": raw["monitoring_enabled"],
             "chatgptUrl": raw["chatgpt_url"],
             "keepChatGptInBackground": raw["keep_chatgpt_in_background"],
+            "gameModeEnabled": raw["game_mode_enabled"],
             "promptTemplate": raw["prompt_template"],
             "autoSubmit": True,
             "copyResponseToClipboard": raw["copy_response_to_clipboard"],

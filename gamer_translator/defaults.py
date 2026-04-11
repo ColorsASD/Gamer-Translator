@@ -166,6 +166,7 @@ DEFAULT_SETTINGS = {
     "monitoringEnabled": True,
     "chatgptUrl": CHATGPT_URL,
     "keepChatGptInBackground": True,
+    "gameModeEnabled": False,
     "promptTemplate": DEFAULT_BIDIRECTIONAL_PROMPT,
     "autoSubmit": True,
     "copyResponseToClipboard": True,
