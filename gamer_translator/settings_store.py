@@ -158,6 +158,7 @@ class SettingsStore:
         self.browser_dir = self.root_dir / "browser"
         self.browser_dir.mkdir(parents=True, exist_ok=True)
         self.config_path = self.root_dir / "settings.json"
+        self._document_cache: dict[str, Any] | None = None
 
     def load_settings(self) -> AppSettings:
         return AppSettings.from_dict(self._read_document().get("settings"))
@@ -186,19 +187,29 @@ class SettingsStore:
         self._write_document(document)
 
     def _read_document(self) -> dict[str, Any]:
+        if self._document_cache is not None:
+            return dict(self._document_cache)
+
         if not self.config_path.exists():
             return {}
 
         try:
-            return json.loads(self.config_path.read_text(encoding="utf-8"))
+            document = json.loads(self.config_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {}
 
+        self._document_cache = dict(document)
+        return dict(document)
+
     def _write_document(self, document: dict[str, Any]) -> None:
+        if self._document_cache == document:
+            return
+
         self.config_path.write_text(
             json.dumps(document, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        self._document_cache = dict(document)
 
 
 def coerce_int(value: Any, fallback: int) -> int:

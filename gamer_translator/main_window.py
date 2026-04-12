@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QBuffer, QEasingCurve, QEvent, QEventLoop, QIODevice, QPoint, Property, QPropertyAnimation, QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QBuffer, QEasingCurve, QEvent, QEventLoop, QIODevice, QPoint, Property, QPropertyAnimation, QSignalBlocker, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QCursor, QGuiApplication, QIcon, QKeySequence, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -60,9 +60,12 @@ SUSPENDED_FRAME_INTERVAL_MS = 1200
 BACKGROUND_TASK_EVENT_INTERVAL_SECONDS = 0.04
 SCREEN_CLIP_ARM_TIMEOUT_SECONDS = 45.0
 AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS = 70000
-AUTOMATION_SCRIPT_VERSION = "2026-04-11-2"
+AUTOMATION_SCRIPT_VERSION = "2026-04-12-4"
 INTERACTION_HEARTBEAT_INTERVAL_MS = 250
 INTERACTION_STALE_RESET_SECONDS = 8.0
+RESPONSE_FOLLOWUP_IDLE_TIMEOUT_SECONDS = 20.0
+RESPONSE_FOLLOWUP_MAX_TIMEOUT_SECONDS = 120.0
+RESPONSE_FOLLOWUP_MAX_ERROR_COUNT = 5
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -1055,6 +1058,9 @@ class MainWindow(QMainWindow):
         self.response_followup_progress_call_id = ""
         self.response_followup_last_sequence = 0
         self.response_followup_handler: Callable[[dict[str, Any]], None] | None = None
+        self.response_followup_started_monotonic = 0.0
+        self.response_followup_last_activity_monotonic = 0.0
+        self.response_followup_error_count = 0
         self.response_followup_timer = QTimer(self)
         self.response_followup_timer.setInterval(180)
         self.response_followup_timer.timeout.connect(self._poll_response_followup_progress)
@@ -2410,6 +2416,9 @@ class MainWindow(QMainWindow):
         self.response_followup_progress_call_id = normalized_progress_call_id
         self.response_followup_last_sequence = 0
         self.response_followup_handler = progress_handler
+        self.response_followup_started_monotonic = time.monotonic()
+        self.response_followup_last_activity_monotonic = self.response_followup_started_monotonic
+        self.response_followup_error_count = 0
         self.response_followup_timer.start()
 
     def _stop_response_followup_polling(self, *, stop_remote: bool = True) -> None:
@@ -2419,17 +2428,22 @@ class MainWindow(QMainWindow):
         self.response_followup_progress_call_id = ""
         self.response_followup_last_sequence = 0
         self.response_followup_handler = None
+        self.response_followup_started_monotonic = 0.0
+        self.response_followup_last_activity_monotonic = 0.0
+        self.response_followup_error_count = 0
 
-        if not stop_remote or not current_progress_call_id:
+        if not current_progress_call_id:
             return
 
         try:
             self._run_javascript(
                 f"""
                     (() => {{
-                      if (typeof window.__gamerTranslatorStopResponseFollowUp === "function") {{
+                      if ({str(stop_remote).lower()} && typeof window.__gamerTranslatorStopResponseFollowUp === "function") {{
                         window.__gamerTranslatorStopResponseFollowUp("{current_progress_call_id}", {{ emitDone: false }});
                       }}
+                      const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
+                      delete progressBucket["{current_progress_call_id}"];
                       return true;
                     }})()
                 """,
@@ -2445,6 +2459,22 @@ class MainWindow(QMainWindow):
             self._stop_response_followup_polling(stop_remote=False)
             return
 
+        now = time.monotonic()
+
+        if (
+            self.response_followup_started_monotonic > 0.0
+            and now - self.response_followup_started_monotonic >= RESPONSE_FOLLOWUP_MAX_TIMEOUT_SECONDS
+        ):
+            self._stop_response_followup_polling()
+            return
+
+        if (
+            self.response_followup_last_activity_monotonic > 0.0
+            and now - self.response_followup_last_activity_monotonic >= RESPONSE_FOLLOWUP_IDLE_TIMEOUT_SECONDS
+        ):
+            self._stop_response_followup_polling()
+            return
+
         try:
             progress_json = self._run_javascript(
                 f"""
@@ -2456,6 +2486,11 @@ class MainWindow(QMainWindow):
                 timeout_ms=3000,
             )
         except Exception:
+            self.response_followup_error_count += 1
+
+            if self.response_followup_error_count >= RESPONSE_FOLLOWUP_MAX_ERROR_COUNT:
+                self._stop_response_followup_polling()
+
             return
 
         if not isinstance(progress_json, str) or not progress_json:
@@ -2472,6 +2507,8 @@ class MainWindow(QMainWindow):
             return
 
         self.response_followup_last_sequence = progress_sequence
+        self.response_followup_last_activity_monotonic = time.monotonic()
+        self.response_followup_error_count = 0
 
         if bool(progress.get("done")):
             self._stop_response_followup_polling(stop_remote=False)
@@ -2570,11 +2607,16 @@ class MainWindow(QMainWindow):
         show_overlay: bool,
         play_sound: bool,
     ) -> None:
+        text_changed = translated_text != self.last_translated_text
         self.last_translated_text = translated_text
-        self.store.save_last_translated_text(translated_text)
+
+        if text_changed:
+            self.store.save_last_translated_text(translated_text)
 
         if copy_to_clipboard:
+            clipboard_signal_blocker = QSignalBlocker(self.clipboard)
             self.clipboard.setText(translated_text)
+            del clipboard_signal_blocker
 
         if show_overlay:
             self._show_translation_overlay(translated_text)
@@ -2638,16 +2680,28 @@ class MainWindow(QMainWindow):
 
     def _render_last_run_status(self, status: LastRunStatus) -> None:
         if not status.message:
-            self.last_run_label.setText("Még nincs futási állapot.")
+            target_text = "Még nincs futási állapot."
+
+            if self.last_run_label.text() != target_text:
+                self.last_run_label.setText(target_text)
+
             self._sync_browser_placeholder()
             return
 
-        self.last_run_label.setText(f"{status.at}: {status.message}")
+        target_text = f"{status.at}: {status.message}"
+
+        if self.last_run_label.text() != target_text:
+            self.last_run_label.setText(target_text)
+
         self._sync_browser_placeholder()
 
     def _set_live_status(self, message: str) -> None:
-        self.status_label.setText(message)
-        self.top_status_label.setText(message)
+        if self.status_label.text() != message:
+            self.status_label.setText(message)
+
+        if self.top_status_label.text() != message:
+            self.top_status_label.setText(message)
+
         self._sync_browser_placeholder()
 
     def _should_show_translation_overlay(self) -> bool:
@@ -3239,77 +3293,94 @@ class MainWindow(QMainWindow):
               return true;
             }})()
         """
-        self._run_javascript(launch_script, timeout_ms=5000)
+        try:
+            self._run_javascript(launch_script, timeout_ms=5000)
 
-        timeout_ms = (
-            int(payload.get("pageReadyTimeoutMs", self.settings.page_ready_timeout_ms))
-            + int(payload.get("responseTimeoutMs", DEFAULT_RESPONSE_TIMEOUT_MS))
-            + AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS
-        )
-        started_at = time.monotonic()
-        last_progress_sequence = 0
-
-        while (time.monotonic() - started_at) * 1000 < timeout_ms:
-            self._touch_browser_interaction_heartbeat()
-            state_json = self._run_javascript(
-                f"""
-                    (() => {{
-                      const resultBucket = window.__gamerTranslatorResults || Object.create(null);
-                      const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
-                      const resultValue = resultBucket["{call_id}"];
-                      const progressValue = progressBucket["{progress_call_id}"] ?? null;
-
-                      if (resultValue !== undefined) {{
-                        delete resultBucket["{call_id}"];
-                        delete progressBucket["{progress_call_id}"];
-                      }}
-
-                      return JSON.stringify({{
-                        result: resultValue === undefined ? null : resultValue,
-                        progress: progressValue
-                      }});
-                    }})()
-                """,
-                timeout_ms=5000,
+            timeout_ms = (
+                int(payload.get("pageReadyTimeoutMs", self.settings.page_ready_timeout_ms))
+                + int(payload.get("responseTimeoutMs", DEFAULT_RESPONSE_TIMEOUT_MS))
+                + AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS
             )
+            started_at = time.monotonic()
+            last_progress_sequence = 0
 
-            state = json.loads(state_json) if isinstance(state_json, str) and state_json else {}
-            progress_json = state.get("progress")
+            while (time.monotonic() - started_at) * 1000 < timeout_ms:
+                self._touch_browser_interaction_heartbeat()
+                state_json = self._run_javascript(
+                    f"""
+                        (() => {{
+                          const resultBucket = window.__gamerTranslatorResults || Object.create(null);
+                          const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
+                          const resultValue = resultBucket["{call_id}"];
+                          const progressValue = progressBucket["{progress_call_id}"] ?? null;
 
-            if isinstance(progress_json, str) and progress_json and progress_handler is not None:
-                progress = json.loads(progress_json)
-                progress_sequence = int(progress.get("seq") or 0)
+                          if (resultValue !== undefined) {{
+                            delete resultBucket["{call_id}"];
+                            delete progressBucket["{progress_call_id}"];
+                          }}
 
-                if progress_sequence > last_progress_sequence:
-                    last_progress_sequence = progress_sequence
+                          return JSON.stringify({{
+                            result: resultValue === undefined ? null : resultValue,
+                            progress: progressValue
+                          }});
+                        }})()
+                    """,
+                    timeout_ms=5000,
+                )
 
-                    try:
-                        progress_handler(progress)
-                    except Exception:
-                        pass
+                state = json.loads(state_json) if isinstance(state_json, str) and state_json else {}
+                progress_json = state.get("progress")
 
-            result_json = state.get("result")
+                if isinstance(progress_json, str) and progress_json and progress_handler is not None:
+                    progress = json.loads(progress_json)
+                    progress_sequence = int(progress.get("seq") or 0)
 
-            if isinstance(result_json, str) and result_json:
-                result = json.loads(result_json)
+                    if progress_sequence > last_progress_sequence:
+                        last_progress_sequence = progress_sequence
 
-                if result.get("ok") is False:
-                    raise RuntimeError(result.get("error") or "Az oldaloldali művelet hibával tért vissza.")
+                        try:
+                            progress_handler(progress)
+                        except Exception:
+                            pass
 
-                return result
+                result_json = state.get("result")
 
-            self._wait_with_events(UI_FRAME_INTERVAL_MS)
+                if isinstance(result_json, str) and result_json:
+                    result = json.loads(result_json)
 
-        raise RuntimeError("A ChatGPT oldaloldali művelete nem fejeződött be időben.")
+                    if result.get("ok") is False:
+                        raise RuntimeError(result.get("error") or "Az oldaloldali művelet hibával tért vissza.")
+
+                    return result
+
+                self._wait_with_events(UI_FRAME_INTERVAL_MS)
+
+            raise RuntimeError("A ChatGPT oldaloldali művelete nem fejeződött be időben.")
+        finally:
+            try:
+                self._run_javascript(
+                    f"""
+                        (() => {{
+                          const resultBucket = window.__gamerTranslatorResults || Object.create(null);
+                          const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
+                          delete resultBucket["{call_id}"];
+                          delete progressBucket["{progress_call_id}"];
+                          return true;
+                        }})()
+                    """,
+                    timeout_ms=3000,
+                )
+            except Exception:
+                pass
 
     def _wait_for_page_load(self, timeout_ms: int) -> None:
         if not self.page_loading:
             return
 
-        loop = QEventLoop(self)
-        timer = QTimer(self)
+        loop = QEventLoop()
+        timer = QTimer()
         timer.setSingleShot(True)
-        heartbeat_timer = QTimer(self)
+        heartbeat_timer = QTimer()
         heartbeat_timer.setInterval(INTERACTION_HEARTBEAT_INTERVAL_MS)
         heartbeat_timer.timeout.connect(self._touch_browser_interaction_heartbeat)
 
@@ -3322,6 +3393,7 @@ class MainWindow(QMainWindow):
         timer.start(timeout_ms)
         heartbeat_timer.start()
         loop.exec()
+        timer.stop()
         heartbeat_timer.stop()
 
         try:
@@ -3334,10 +3406,10 @@ class MainWindow(QMainWindow):
 
     def _run_javascript(self, script: str, *, timeout_ms: int) -> Any:
         result_box: dict[str, Any] = {"done": False}
-        loop = QEventLoop(self)
-        timer = QTimer(self)
+        loop = QEventLoop()
+        timer = QTimer()
         timer.setSingleShot(True)
-        heartbeat_timer = QTimer(self)
+        heartbeat_timer = QTimer()
         heartbeat_timer.setInterval(INTERACTION_HEARTBEAT_INTERVAL_MS)
 
         def touch_interaction_heartbeat() -> None:
@@ -3363,6 +3435,7 @@ class MainWindow(QMainWindow):
         heartbeat_timer.start()
         self.browser.page().runJavaScript(script, handle_result)
         loop.exec()
+        timer.stop()
         heartbeat_timer.stop()
 
         if not result_box["done"]:
@@ -3374,7 +3447,7 @@ class MainWindow(QMainWindow):
         if delay_ms <= 0:
             return
 
-        loop = QEventLoop(self)
+        loop = QEventLoop()
         QTimer.singleShot(delay_ms, loop.quit)
         loop.exec()
 

@@ -1,7 +1,12 @@
 (() => {
-  const AUTOMATION_SCRIPT_VERSION = "2026-04-11-2";
+  const AUTOMATION_SCRIPT_VERSION = "2026-04-12-4";
   const FRAME_INTERVAL_MS = 20;
   const SELF_HEAL_CHECK_LIMIT = 5;
+  const SUBMISSION_RETRY_GUARD_MS = 2200;
+  const FRAME_PACER_BURST_MS = 3000;
+  const ASSISTANT_RESPONSE_FOLLOW_UP_IDLE_MS = 15000;
+  const ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS = 4000;
+  const ASSISTANT_RESPONSE_FOLLOW_UP_MAX_MS = 120000;
   const DOM_TEXT_BLOCK_TAGS = new Set([
     "ARTICLE",
     "ASIDE",
@@ -52,19 +57,20 @@
     const existingPacer = window.__gamerTranslatorFramePacer;
 
     if (existingPacer && typeof existingPacer.start === "function") {
-      existingPacer.start();
+      existingPacer.start(FRAME_PACER_BURST_MS);
 
       if (typeof existingPacer.ensureNode === "function") {
         existingPacer.ensureNode();
       }
 
-      return;
+      return existingPacer;
     }
 
     const state = {
       intervalId: null,
       pulseState: false,
-      pulseNode: null
+      pulseNode: null,
+      stopTimeoutId: null
     };
 
     const ensureNode = () => {
@@ -118,18 +124,12 @@
         : "translate3d(0, 0, 0)";
     };
 
-    const start = () => {
-      ensureNode();
-
-      if (state.intervalId !== null) {
-        return;
+    const stop = () => {
+      if (state.stopTimeoutId !== null) {
+        window.clearTimeout(state.stopTimeoutId);
+        state.stopTimeoutId = null;
       }
 
-      tick();
-      state.intervalId = window.setInterval(tick, FRAME_INTERVAL_MS);
-    };
-
-    const stop = () => {
       if (state.intervalId === null) {
         return;
       }
@@ -138,14 +138,35 @@
       state.intervalId = null;
     };
 
+    const start = (durationMs = FRAME_PACER_BURST_MS) => {
+      ensureNode();
+
+      if (state.intervalId === null) {
+        tick();
+        state.intervalId = window.setInterval(tick, FRAME_INTERVAL_MS);
+      }
+
+      const boundedDurationMs = Math.max(FRAME_INTERVAL_MS, Number(durationMs) || FRAME_PACER_BURST_MS);
+
+      if (state.stopTimeoutId !== null) {
+        window.clearTimeout(state.stopTimeoutId);
+      }
+
+      state.stopTimeoutId = window.setTimeout(() => {
+        state.stopTimeoutId = null;
+        stop();
+      }, boundedDurationMs);
+    };
+
     state.ensureNode = ensureNode;
     state.start = start;
+    state.pulseFor = start;
     state.stop = stop;
     window.__gamerTranslatorFramePacer = state;
 
-    start();
-    document.addEventListener("visibilitychange", start, { passive: true });
-    window.addEventListener("pageshow", start, { passive: true });
+    document.addEventListener("visibilitychange", () => start(FRAME_PACER_BURST_MS), { passive: true });
+    window.addEventListener("pageshow", () => start(FRAME_PACER_BURST_MS), { passive: true });
+    return state;
   }
 
   ensureFramePacer();
@@ -269,6 +290,10 @@
 
     const waitForChange = (timeoutMs) => new Promise((resolve) => {
       start();
+      ensureFramePacer().pulseFor(Math.min(
+        ASSISTANT_RESPONSE_FOLLOW_UP_MAX_MS,
+        Math.max(FRAME_PACER_BURST_MS, Number(timeoutMs) || FRAME_PACER_BURST_MS)
+      ));
 
       if (state.observer === null) {
         window.setTimeout(() => resolve("timeout"), Math.max(FRAME_INTERVAL_MS, timeoutMs));
@@ -373,6 +398,10 @@
     if (existingFollowUp) {
       existingFollowUp.stopped = true;
 
+      if (existingFollowUp.timeoutId) {
+        window.clearTimeout(existingFollowUp.timeoutId);
+      }
+
       if (typeof existingFollowUp.unsubscribe === "function") {
         existingFollowUp.unsubscribe();
       }
@@ -391,12 +420,19 @@
   window.__gamerTranslatorStopResponseFollowUp = stopAssistantResponseFollowUp;
 
   if (window.__gamerTranslatorDeliverVersion !== AUTOMATION_SCRIPT_VERSION) {
+    const previousAssistantResponseFollowUps = ensureAssistantResponseFollowUps();
     const previousComposerAutoRecovery = window.__gamerTranslatorComposerAutoRecovery;
+
+    for (const followUpProgressCallId of Object.keys(previousAssistantResponseFollowUps)) {
+      stopAssistantResponseFollowUp(followUpProgressCallId, { emitDone: false });
+    }
 
     if (previousComposerAutoRecovery && typeof previousComposerAutoRecovery === "object") {
       previousComposerAutoRecovery.suspendedCount = Number.MAX_SAFE_INTEGER;
 
-      if (typeof previousComposerAutoRecovery.unsubscribe === "function") {
+      if (typeof previousComposerAutoRecovery.destroy === "function") {
+        previousComposerAutoRecovery.destroy();
+      } else if (typeof previousComposerAutoRecovery.unsubscribe === "function") {
         previousComposerAutoRecovery.unsubscribe();
       }
     }
@@ -1103,6 +1139,8 @@
       const assistantMessages = findAssistantMessageNodes();
       const lastUserMessage = userMessages.at(-1) || null;
       const lastAssistantMessage = assistantMessages.at(-1) || null;
+      const sendButton = findSendButton(liveComposer, { allowDisabled: true });
+      const sendButtonLabel = sendButton instanceof HTMLButtonElement ? readButtonLabel(sendButton) : "";
 
       return {
         composerText: normalizePromptStructure(readComposerText(liveComposer)),
@@ -1113,7 +1151,10 @@
         lastUserNodeId: lastUserMessage ? getDomNodeId(lastUserMessage) : "",
         assistantCount: assistantMessages.length,
         lastAssistantNodeId: lastAssistantMessage ? getDomNodeId(lastAssistantMessage) : "",
-        lastAssistantPending: lastAssistantMessage ? isAssistantResponsePending(lastAssistantMessage) : false
+        lastAssistantPending: lastAssistantMessage ? isAssistantResponsePending(lastAssistantMessage) : false,
+        sendButtonDisabled: sendButton instanceof HTMLButtonElement ? sendButton.disabled : false,
+        sendButtonLabel,
+        sendButtonIsNonSend: sendButton instanceof HTMLButtonElement ? looksLikeNonSendAction(sendButtonLabel) : false
       };
     }
 
@@ -1158,8 +1199,89 @@
         String(state.lastUserNodeId || ""),
         Number(state.assistantCount) || 0,
         String(state.lastAssistantNodeId || ""),
-        state.lastAssistantPending ? "1" : "0"
+        state.lastAssistantPending ? "1" : "0",
+        state.sendButtonDisabled ? "1" : "0",
+        String(state.sendButtonLabel || ""),
+        state.sendButtonIsNonSend ? "1" : "0"
       ].join("|");
+    }
+
+    function ensureSubmissionRetryGuard() {
+      const existingGuard = window.__gamerTranslatorSubmissionRetryGuard;
+
+      if (
+        existingGuard
+        && typeof existingGuard === "object"
+        && typeof existingGuard.arm === "function"
+        && typeof existingGuard.getRemainingMs === "function"
+        && typeof existingGuard.clear === "function"
+      ) {
+        return existingGuard;
+      }
+
+      const guardState = {
+        payloadKey: "",
+        activeUntil: 0,
+        arm(composerCandidate, submissionStateCandidate) {
+          const composer = findComposer() || composerCandidate;
+          const submissionState = submissionStateCandidate || captureComposerSubmitState(composer);
+          const payloadKey = getComposerAutoRecoveryPayloadKey(submissionState);
+
+          if (!payloadKey) {
+            guardState.clear();
+            return;
+          }
+
+          guardState.payloadKey = payloadKey;
+          guardState.activeUntil = Date.now() + SUBMISSION_RETRY_GUARD_MS;
+        },
+        getRemainingMs(composerCandidate, submissionStateCandidate) {
+          if (Date.now() >= guardState.activeUntil) {
+            guardState.clear();
+            return 0;
+          }
+
+          const composer = findComposer() || composerCandidate;
+
+          if (!(composer instanceof HTMLElement)) {
+            guardState.clear();
+            return 0;
+          }
+
+          const submissionState = submissionStateCandidate || captureComposerSubmitState(composer);
+          const payloadKey = getComposerAutoRecoveryPayloadKey(submissionState);
+
+          if (!payloadKey || payloadKey !== guardState.payloadKey) {
+            guardState.clear();
+            return 0;
+          }
+
+          return Math.max(0, guardState.activeUntil - Date.now());
+        },
+        clear() {
+          guardState.payloadKey = "";
+          guardState.activeUntil = 0;
+        }
+      };
+
+      window.__gamerTranslatorSubmissionRetryGuard = guardState;
+      return guardState;
+    }
+
+    function armSubmissionRetryGuard(composerCandidate, submissionStateCandidate) {
+      ensureSubmissionRetryGuard().arm(composerCandidate, submissionStateCandidate);
+    }
+
+    function getSubmissionRetryGuardRemainingMs(composerCandidate, submissionStateCandidate) {
+      return ensureSubmissionRetryGuard().getRemainingMs(composerCandidate, submissionStateCandidate);
+    }
+
+    function isSubmissionRetryGuardActive(composerCandidate, submissionStateCandidate) {
+      return getSubmissionRetryGuardRemainingMs(composerCandidate, submissionStateCandidate) > 0;
+    }
+
+    function clearSubmissionRetryGuard() {
+      ensureSubmissionRetryGuard().clear();
     }
 
     function hasAttachmentSnapshot(snapshot) {
@@ -1483,18 +1605,28 @@
     }
 
     function captureAssistantSnapshot() {
-      const assistantEntries = findAssistantMessageNodes()
-        .map((node) => ({
-          nodeId: getDomNodeId(node),
-          text: normalizeWhitespace(extractAssistantText(node)),
-          pending: isAssistantResponsePending(node)
-        }))
-        .filter((entry) => Boolean(entry.text) || entry.pending);
+      const assistantNodes = findAssistantMessageNodes();
+      let lastEntry = null;
 
-      const lastEntry = assistantEntries.at(-1) || null;
+      for (let index = assistantNodes.length - 1; index >= 0; index -= 1) {
+        const node = assistantNodes[index];
+        const pending = isAssistantResponsePending(node);
+        const text = normalizeWhitespace(extractAssistantText(node));
+
+        if (!text && !pending) {
+          continue;
+        }
+
+        lastEntry = {
+          nodeId: getDomNodeId(node),
+          text,
+          pending
+        };
+        break;
+      }
 
       return {
-        count: assistantEntries.length,
+        count: assistantNodes.length,
         lastNodeId: lastEntry?.nodeId || "",
         lastText: lastEntry?.text || "",
         lastPending: Boolean(lastEntry?.pending)
@@ -1592,13 +1724,32 @@
         latestText: String(initialSnapshot.lastText || ""),
         latestNodeId: String(initialSnapshot.lastNodeId || ""),
         startUserCount,
+        startedAt: Date.now(),
+        timeoutId: 0,
         unsubscribe: null
       };
 
       stopAssistantResponseFollowUp(followUpProgressCallId, { emitDone: false });
 
+      const scheduleFollowUpStop = (delayMs) => {
+        if (followUpState.timeoutId) {
+          window.clearTimeout(followUpState.timeoutId);
+        }
+
+        const boundedDelayMs = Math.max(FRAME_INTERVAL_MS, Number(delayMs) || ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS);
+        followUpState.timeoutId = window.setTimeout(() => {
+          followUpState.timeoutId = 0;
+          stopAssistantResponseFollowUp(followUpProgressCallId);
+        }, boundedDelayMs);
+      };
+
       const evaluateFollowUp = () => {
         if (followUpState.stopped) {
+          return;
+        }
+
+        if (Date.now() - followUpState.startedAt >= ASSISTANT_RESPONSE_FOLLOW_UP_MAX_MS) {
+          stopAssistantResponseFollowUp(followUpProgressCallId);
           return;
         }
 
@@ -1617,6 +1768,11 @@
           currentSnapshot.lastText === followUpState.latestText
           && currentSnapshot.lastNodeId === followUpState.latestNodeId
         ) {
+          scheduleFollowUpStop(
+            currentSnapshot.lastPending
+              ? ASSISTANT_RESPONSE_FOLLOW_UP_IDLE_MS
+              : ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS
+          );
           return;
         }
 
@@ -1626,10 +1782,20 @@
           kind: "assistant_response",
           text: currentSnapshot.lastText
         });
+        scheduleFollowUpStop(
+          currentSnapshot.lastPending
+            ? ASSISTANT_RESPONSE_FOLLOW_UP_IDLE_MS
+            : ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS
+        );
       };
 
       followUpState.unsubscribe = domTracker.subscribe(evaluateFollowUp);
       followUps[followUpProgressCallId] = followUpState;
+      scheduleFollowUpStop(
+        initialSnapshot.lastPending
+          ? ASSISTANT_RESPONSE_FOLLOW_UP_IDLE_MS
+          : ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS
+      );
       return followUpProgressCallId;
     }
 
@@ -1810,10 +1976,10 @@
 
       const directMatches = Array.from(document.querySelectorAll(`[data-message-author-role="${normalizedAuthorRole}"]`))
         .filter(isDomTrackableElement)
-        .filter((element) => doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
+        .filter((element) => isTopLevelAuthorMessageNode(element, normalizedAuthorRole));
 
       if (directMatches.length > 0) {
-        return Array.from(new Set(directMatches));
+        return directMatches;
       }
 
       const fallbackMatches = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"], article'))
@@ -1821,6 +1987,21 @@
         .filter((element) => doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
 
       return Array.from(new Set(fallbackMatches));
+    }
+
+    function isTopLevelAuthorMessageNode(element, authorRole) {
+      if (!(element instanceof HTMLElement)) {
+        return false;
+      }
+
+      const normalizedAuthorRole = String(authorRole || "").trim().toLowerCase();
+
+      if (!normalizedAuthorRole) {
+        return false;
+      }
+
+      const parentMessageNode = element.parentElement?.closest(`[data-message-author-role="${normalizedAuthorRole}"]`);
+      return !(parentMessageNode instanceof HTMLElement);
     }
 
     function doesMessageNodeMatchAuthor(element, authorRole) {
@@ -2266,6 +2447,17 @@
         .trim();
     }
 
+    function hasSendButtonSubmissionTransition(beforeState, afterState) {
+      if (!beforeState || typeof beforeState !== "object" || !afterState || typeof afterState !== "object") {
+        return false;
+      }
+
+      const labelChanged = String(afterState.sendButtonLabel || "") !== String(beforeState.sendButtonLabel || "");
+      return (afterState.sendButtonDisabled && !beforeState.sendButtonDisabled)
+        || (afterState.sendButtonIsNonSend && !beforeState.sendButtonIsNonSend)
+        || (labelChanged && (afterState.sendButtonIsNonSend || afterState.sendButtonDisabled));
+    }
+
     function hasSubmissionTransition(beforeState, afterState) {
       const beforeComposerText = normalizePromptStructure(beforeState.composerText);
       const afterComposerText = normalizePromptStructure(afterState.composerText);
@@ -2277,8 +2469,9 @@
         || (afterState.lastAssistantPending && !beforeState.lastAssistantPending);
       const attachmentRemoved = afterState.attachmentCount < beforeState.attachmentCount
         || afterState.fileInputCount < beforeState.fileInputCount;
+      const sendButtonTransitionStarted = hasSendButtonSubmissionTransition(beforeState, afterState);
 
-      return composerChanged || userMessageAppeared || assistantActivityStarted || attachmentRemoved || isGenerationInProgress();
+      return composerChanged || userMessageAppeared || assistantActivityStarted || attachmentRemoved || sendButtonTransitionStarted || isGenerationInProgress();
     }
 
     function hasConfirmedSubmissionStart(beforeState, afterState) {
@@ -2297,8 +2490,9 @@
       const generationStarted = Boolean(afterState.lastAssistantPending) || isGenerationInProgress();
       const attachmentRemoved = afterState.attachmentCount < beforeState.attachmentCount
         || afterState.fileInputCount < beforeState.fileInputCount;
+      const sendButtonTransitionStarted = hasSendButtonSubmissionTransition(beforeState, afterState);
 
-      return userMessageAppeared || assistantActivityStarted || generationStarted || attachmentRemoved || composerChanged;
+      return userMessageAppeared || assistantActivityStarted || generationStarted || attachmentRemoved || composerChanged || sendButtonTransitionStarted;
     }
 
     function hasComposerPayloadState(state) {
@@ -2340,6 +2534,10 @@
         return false;
       }
 
+      if (isSubmissionRetryGuardActive(composer, submissionState)) {
+        return false;
+      }
+
       if (submissionState.hasPendingAttachmentWork || isGenerationInProgress()) {
         return false;
       }
@@ -2364,18 +2562,25 @@
     function ensureComposerAutoRecoveryWatcher() {
       const existingWatcher = window.__gamerTranslatorComposerAutoRecovery;
 
-      if (existingWatcher && typeof existingWatcher === "object" && typeof existingWatcher.requestEvaluation === "function") {
+      if (
+        existingWatcher
+        && typeof existingWatcher === "object"
+        && typeof existingWatcher.requestEvaluation === "function"
+        && !existingWatcher.destroyed
+      ) {
         return existingWatcher;
       }
 
       const domTracker = ensureDomActivityTracker();
       const watcherState = {
         busy: false,
+        destroyed: false,
         suspendedCount: 0,
         queued: false,
         armedPayloadKey: "",
         lastAttemptKey: "",
         unsubscribe: null,
+        destroy: null,
         requestEvaluation: null,
       };
 
@@ -2400,6 +2605,7 @@
 
         watcherState.armedPayloadKey = payloadKey;
         watcherState.lastAttemptKey = "";
+        armSubmissionRetryGuard(composer, submissionState);
         watcherState.requestEvaluation();
       };
 
@@ -2475,7 +2681,7 @@
       };
 
       const evaluateComposerState = async () => {
-        if (watcherState.busy || watcherState.suspendedCount > 0) {
+        if (watcherState.destroyed || watcherState.busy || watcherState.suspendedCount > 0) {
           return;
         }
 
@@ -2558,7 +2764,7 @@
       };
 
       watcherState.requestEvaluation = () => {
-        if (watcherState.queued) {
+        if (watcherState.destroyed || watcherState.queued) {
           return;
         }
 
@@ -2570,11 +2776,32 @@
       };
 
       watcherState.unsubscribe = domTracker.subscribe(() => {
+        if (!watcherState.armedPayloadKey && !watcherState.busy) {
+          return;
+        }
+
         watcherState.requestEvaluation();
       });
       document.addEventListener("click", handleSubmitIntentClick, true);
       document.addEventListener("submit", handleSubmitIntentForm, true);
       document.addEventListener("keydown", handleSubmitIntentKeyDown, true);
+      watcherState.destroy = () => {
+        if (watcherState.destroyed) {
+          return;
+        }
+
+        watcherState.destroyed = true;
+        watcherState.suspendedCount = Number.MAX_SAFE_INTEGER;
+
+        if (typeof watcherState.unsubscribe === "function") {
+          watcherState.unsubscribe();
+          watcherState.unsubscribe = null;
+        }
+
+        document.removeEventListener("click", handleSubmitIntentClick, true);
+        document.removeEventListener("submit", handleSubmitIntentForm, true);
+        document.removeEventListener("keydown", handleSubmitIntentKeyDown, true);
+      };
 
       window.__gamerTranslatorComposerAutoRecovery = watcherState;
       watcherState.requestEvaluation();
@@ -2623,10 +2850,12 @@
       let afterState = captureComposerSubmitState(liveComposer);
 
       if (hasConfirmedSubmissionStart(beforeState, afterState)) {
+        clearSubmissionRetryGuard();
         return;
       }
 
       if (hasSubmissionTransition(beforeState, afterState) && !hasComposerPayloadState(afterState)) {
+        clearSubmissionRetryGuard();
         return;
       }
 
@@ -2635,27 +2864,36 @@
 
         if (!hasComposerPayloadState(afterState)) {
           if (hasSubmissionTransition(beforeState, afterState) || hasConfirmedSubmissionStart(beforeState, afterState)) {
+            clearSubmissionRetryGuard();
             return;
           }
 
           break;
         }
 
+        armSubmissionRetryGuard(liveComposer, afterState);
         attempt.run(liveComposer);
-        await waitForSubmissionTransition(beforeState, liveComposer, attempt.timeoutMs);
+        await waitForSubmissionTransition(
+          beforeState,
+          liveComposer,
+          Math.max(attempt.timeoutMs, getSubmissionRetryGuardRemainingMs(liveComposer, afterState)),
+        );
 
         liveComposer = findComposer() || liveComposer;
         afterState = captureComposerSubmitState(liveComposer);
 
         if (hasConfirmedSubmissionStart(beforeState, afterState)) {
+          clearSubmissionRetryGuard();
           return;
         }
 
         if (hasSubmissionTransition(beforeState, afterState) && !hasComposerPayloadState(afterState)) {
+          clearSubmissionRetryGuard();
           return;
         }
       }
 
+      clearSubmissionRetryGuard();
       throw new Error(failureMessage);
     }
 
