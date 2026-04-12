@@ -2773,8 +2773,16 @@ class MainWindow(QMainWindow):
             return
 
         self._update_browser_refresh_timer()
+        foreground_browser_visible = (
+            self.isVisible()
+            and not self.isMinimized()
+            and not self.browser_background_mode
+        )
 
-        if hasattr(self, "frame_pulse_dot") and self.isVisible() and not self.isMinimized():
+        if foreground_browser_visible:
+            return
+
+        if hasattr(self, "frame_pulse_dot") and self.browser_background_mode and self.browser_background_host.isVisible():
             self.frame_pulse_state = not self.frame_pulse_state
             pulse_alpha = 1 if self.frame_pulse_state else 2
             pulse_red = 16 if self.frame_pulse_state else 19
