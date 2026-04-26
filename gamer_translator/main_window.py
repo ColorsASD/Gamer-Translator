@@ -11,7 +11,7 @@ import tempfile
 import time
 import uuid
 import winsound
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -233,6 +233,8 @@ if sys.platform == "win32":
     kernel32.GetCurrentThread.restype = wintypes.HANDLE
     kernel32.GetCurrentThreadId.argtypes = ()
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+    kernel32.GetLastError.argtypes = ()
+    kernel32.GetLastError.restype = wintypes.DWORD
     kernel32.GetThreadPriority.argtypes = (wintypes.HANDLE,)
     kernel32.GetThreadPriority.restype = ctypes.c_int
     kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
@@ -988,6 +990,7 @@ class MainWindow(QMainWindow):
         self.store = SettingsStore()
         self.ocr_service = OCRService()
         self.background_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gamer_translator")
+        self.current_background_future: Future[Any] | None = None
         self.settings = self.store.load_settings()
         self.last_run_status = self.store.load_last_run_status()
         self.automation_script = resource_path("gamer_translator/automation.js").read_text(encoding="utf-8")
@@ -1093,7 +1096,7 @@ class MainWindow(QMainWindow):
         self._unregister_hotkeys()
         self._uninstall_keyboard_hook()
         self._restore_system_sleep_state()
-        self.background_executor.shutdown(wait=False, cancel_futures=True)
+        self._shutdown_background_executor()
         if self.tray_icon is not None:
             self.tray_icon.hide()
         self.browser_background_host.close()
@@ -1257,7 +1260,7 @@ class MainWindow(QMainWindow):
         self.reset_defaults_button = QPushButton("Alapértékek visszaállítása")
         self.close_drawer_button = QPushButton("Bezárás")
 
-        self.open_chatgpt_button.clicked.connect(self.open_chatgpt)
+        self.open_chatgpt_button.clicked.connect(self._handle_open_chatgpt_button_clicked)
         self.send_prompt_now_button.clicked.connect(self.send_prompt_now)
         self.save_settings_button.clicked.connect(self.save_settings)
         self.reset_defaults_button.clicked.connect(self.reset_defaults)
@@ -2123,13 +2126,23 @@ class MainWindow(QMainWindow):
     def close_drawer(self) -> None:
         self._set_drawer_open(False)
 
-    def open_chatgpt(self) -> None:
+    def _handle_open_chatgpt_button_clicked(self) -> None:
+        self.open_chatgpt(show_error_dialog=True)
+
+    def open_chatgpt(self, *, show_error_dialog: bool = False) -> None:
         self.settings = self._read_settings_from_form()
         self._begin_browser_interaction()
 
         try:
             self._ensure_chatgpt_page_loaded(reload_if_open=True)
             self._ensure_automation_ready()
+        except Exception as error:  # noqa: BLE001
+            message = str(error)
+            self._save_last_run_status(message)
+            self._set_live_status(message)
+
+            if show_error_dialog:
+                QMessageBox.warning(self, APP_NAME, message)
         finally:
             self._end_browser_interaction()
 
@@ -2630,25 +2643,47 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             QApplication.beep()
 
+    def _shutdown_background_executor(self) -> None:
+        future = self.current_background_future
+
+        if future is not None and not future.done():
+            future.cancel()
+            last_status_update = 0.0
+
+            while not future.done():
+                if time.monotonic() - last_status_update >= 0.35:
+                    self._set_live_status("Háttérben futó feldolgozás befejezése kilépés előtt.")
+                    last_status_update = time.monotonic()
+
+                QGuiApplication.processEvents()
+                time.sleep(BACKGROUND_TASK_EVENT_INTERVAL_SECONDS)
+
+        self.background_executor.shutdown(wait=True, cancel_futures=True)
+
     def _run_in_background_with_events(self, task: Callable[[], Any], *, progress_message: str | None = None) -> Any:
         future = self.background_executor.submit(self._run_low_priority_background_task, task)
+        self.current_background_future = future
         last_status_update = 0.0
 
-        while not future.done():
-            if self.browser_interaction_active:
-                self._touch_browser_interaction_heartbeat()
+        try:
+            while not future.done():
+                if self.browser_interaction_active:
+                    self._touch_browser_interaction_heartbeat()
 
-            if self.clipboard_translation_in_progress:
-                self._touch_clipboard_translation_heartbeat()
+                if self.clipboard_translation_in_progress:
+                    self._touch_clipboard_translation_heartbeat()
 
-            if progress_message and time.monotonic() - last_status_update >= 0.35:
-                self._set_live_status(progress_message)
-                last_status_update = time.monotonic()
+                if progress_message and time.monotonic() - last_status_update >= 0.35:
+                    self._set_live_status(progress_message)
+                    last_status_update = time.monotonic()
 
-            QGuiApplication.processEvents()
-            time.sleep(BACKGROUND_TASK_EVENT_INTERVAL_SECONDS)
+                QGuiApplication.processEvents()
+                time.sleep(BACKGROUND_TASK_EVENT_INTERVAL_SECONDS)
 
-        return future.result()
+            return future.result()
+        finally:
+            if self.current_background_future is future:
+                self.current_background_future = None
 
     def _run_low_priority_background_task(self, task: Callable[[], Any]) -> Any:
         if sys.platform != "win32":
@@ -2705,10 +2740,7 @@ class MainWindow(QMainWindow):
         self._sync_browser_placeholder()
 
     def _should_show_translation_overlay(self) -> bool:
-        if self.settings.game_mode_enabled:
-            return False
-
-        return self._is_window_hidden_for_tray() or self.browser_background_mode
+        return self._is_window_hidden_for_tray() or self.browser_background_mode or not self.isActiveWindow()
 
     def _show_loading_overlay(self) -> None:
         if not self._should_show_translation_overlay():
@@ -2934,6 +2966,16 @@ class MainWindow(QMainWindow):
         self.keyboard_hook_handle = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self.keyboard_hook_callback, module_handle, 0)
 
         if not self.keyboard_hook_handle:
+            error_code = int(kernel32.GetLastError())
+            suffix = f" Windows hibakód: {error_code}" if error_code else ""
+            error_message = f"A gyorsbillentyű-hook telepítése nem sikerült.{suffix}"
+
+            for action in self.registered_hotkeys:
+                self.hotkey_errors[action] = error_message
+
+            self.registered_hotkeys = {}
+            self.hotkey_pressed_states = {}
+            self.registered_hotkey_primary_keys = set()
             self.keyboard_hook_callback = None
 
     def _uninstall_keyboard_hook(self) -> None:
@@ -3390,7 +3432,13 @@ class MainWindow(QMainWindow):
         timer.setSingleShot(True)
         heartbeat_timer = QTimer()
         heartbeat_timer.setInterval(INTERACTION_HEARTBEAT_INTERVAL_MS)
-        heartbeat_timer.timeout.connect(self._touch_browser_interaction_heartbeat)
+
+        def touch_interaction_heartbeat() -> None:
+            if self.browser_interaction_active:
+                self._touch_browser_interaction_heartbeat()
+
+            if self.clipboard_translation_in_progress:
+                self._touch_clipboard_translation_heartbeat()
 
         def finish(*_args: object) -> None:
             if loop.isRunning():
@@ -3399,6 +3447,7 @@ class MainWindow(QMainWindow):
         timer.timeout.connect(finish)
         self.browser.loadFinished.connect(finish)
         timer.start(timeout_ms)
+        heartbeat_timer.timeout.connect(touch_interaction_heartbeat)
         heartbeat_timer.start()
         loop.exec()
         timer.stop()
