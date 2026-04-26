@@ -2740,7 +2740,10 @@ class MainWindow(QMainWindow):
         self._sync_browser_placeholder()
 
     def _should_show_translation_overlay(self) -> bool:
-        return self._is_window_hidden_for_tray() or self.browser_background_mode or not self.isActiveWindow()
+        if self.settings.game_mode_enabled:
+            return False
+
+        return self._is_window_hidden_for_tray() or self.browser_background_mode
 
     def _show_loading_overlay(self) -> None:
         if not self._should_show_translation_overlay():

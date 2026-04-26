@@ -62,7 +62,7 @@ Az elkészült egyfájlos program a `dist\Gamer Translator.exe` fájlba kerül.
 3. A `Prompt elküldése` gombbal küldd el a kézi promptot az aktuális beszélgetésbe.
 4. Használd a képkivágást, vagy illessz be képet a vágólapra.
 5. Várd meg a fordítást.
-6. Ha az app nincs előtérben, a fordítás felül egy overlay blokkban is megjelenik.
+6. Ha az app le van kicsinyítve vagy el van tüntetve, a fordítás felül egy overlay blokkban is megjelenik.
 7. A `Szöveg kiolvasása képről` beállítás alapértelmezetten be van kapcsolva. Ilyenkor a program előbb OCR-rel kiolvassa a képen lévő szöveget, és ezt küldi el a ChatGPT-nek.
 8. A kész szöveget illeszd be vágólapról, vagy használd a begépelési gyorsgombot.
 9. Az `Alt + X` gyorsgombbal bármikor megnyitható a gyors chat overlay kézi szövegküldéshez.
