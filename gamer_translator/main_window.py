@@ -301,9 +301,12 @@ def build_unicode_inputs(text: str) -> list[INPUT]:
             inputs.extend(build_virtual_key_inputs(VK_TAB))
             continue
 
-        scan_code = ord(character)
-        inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=scan_code, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=0)))
-        inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=scan_code, dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)))
+        encoded_character = character.encode("utf-16-le")
+
+        for index in range(0, len(encoded_character), 2):
+            scan_code = int.from_bytes(encoded_character[index : index + 2], "little")
+            inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=scan_code, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=0)))
+            inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=scan_code, dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)))
 
     return inputs
 
@@ -394,6 +397,9 @@ def build_character_inputs(character: str) -> list[INPUT]:
 
     if character == "\t":
         return build_virtual_key_inputs(VK_TAB)
+
+    if ord(character) > 0xFFFF:
+        return build_unicode_inputs(character)
 
     keyboard_layout = user32.GetKeyboardLayout(0)
     mapping = user32.VkKeyScanExW(ord(character), keyboard_layout)
@@ -1223,6 +1229,7 @@ class MainWindow(QMainWindow):
 
         form_layout = QFormLayout()
         form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form_layout.addRow("", self.monitoring_enabled)
         form_layout.addRow("Kézi prompt", self.prompt_template)
         form_layout.addRow("", self.copy_response_to_clipboard)
         form_layout.addRow("", self.ocr_text_from_clipboard_image)
@@ -2086,8 +2093,6 @@ class MainWindow(QMainWindow):
         self.settings = self._read_settings_from_form()
         self.store.save_settings(self.settings)
         self.translation_overlay.set_overlay_opacity_percent(self.settings.overlay_opacity_percent)
-        if self.settings.game_mode_enabled:
-            self._hide_translation_overlay()
         self._register_hotkeys()
         self._refresh_system_keep_awake()
         self._sync_browser_host_mode()
@@ -2106,8 +2111,6 @@ class MainWindow(QMainWindow):
         self._apply_settings_to_form(self.settings)
         self.store.save_settings(self.settings)
         self.translation_overlay.set_overlay_opacity_percent(self.settings.overlay_opacity_percent)
-        if self.settings.game_mode_enabled:
-            self._hide_translation_overlay()
         self._register_hotkeys()
         self._refresh_system_keep_awake()
         self._sync_browser_host_mode()
@@ -2740,9 +2743,6 @@ class MainWindow(QMainWindow):
         self._sync_browser_placeholder()
 
     def _should_show_translation_overlay(self) -> bool:
-        if self.settings.game_mode_enabled:
-            return False
-
         return self._is_window_hidden_for_tray() or self.browser_background_mode
 
     def _show_loading_overlay(self) -> None:
@@ -3157,6 +3157,7 @@ class MainWindow(QMainWindow):
             time.sleep(0.012)
 
     def _apply_settings_to_form(self, settings: AppSettings) -> None:
+        self.monitoring_enabled.setChecked(settings.monitoring_enabled)
         self.prompt_template.setPlainText(settings.prompt_template)
         self.copy_response_to_clipboard.setChecked(settings.copy_response_to_clipboard)
         self.ocr_text_from_clipboard_image.setChecked(settings.ocr_text_from_clipboard_image)
@@ -3175,7 +3176,7 @@ class MainWindow(QMainWindow):
 
     def _read_settings_from_form(self) -> AppSettings:
         return AppSettings(
-            monitoring_enabled=True,
+            monitoring_enabled=self.monitoring_enabled.isChecked(),
             chatgpt_url=CHATGPT_URL,
             keep_chatgpt_in_background=self.keep_chatgpt_in_background.isChecked(),
             game_mode_enabled=self.game_mode_enabled.isChecked(),

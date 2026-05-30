@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="gamer_translator/assets/icon-128.png" alt="Gamer Translator ikon" width="128" height="128">
+  <img src="gamer_translator/assets/icon-1024.png" alt="Gamer Translator ikon" width="160" height="160">
 </p>
 
 # Gamer Translator

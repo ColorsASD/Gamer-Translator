@@ -561,6 +561,7 @@
       );
       const expectedFileKey = describeSelectedFile(file);
       let attachAttemptStarted = false;
+      let lastAttachBeforeSnapshot = null;
 
       for (let checkIndex = 0; checkIndex < SELF_HEAL_CHECK_LIMIT; checkIndex += 1) {
         composer = findComposer() || composer;
@@ -572,6 +573,7 @@
 
         if (!hasAttachmentSnapshot(currentSnapshot) || !currentSnapshot.hasPendingAttachmentWork) {
           const beforeSnapshot = currentSnapshot;
+          lastAttachBeforeSnapshot = beforeSnapshot;
           const attachedByInput = attachViaFileInput(composer, file);
           const attachedByDrop = attachedByInput ? false : attachViaDrop(composer, file);
 
@@ -592,6 +594,7 @@
               afterAttachComposer,
               beforeSnapshot,
               imageUploadTimeoutMs,
+              expectedFileKey,
             );
 
             if (attachedComposer) {
@@ -603,7 +606,7 @@
         const verifiedComposer = findComposer() || composer;
         const verifiedSnapshot = captureComposerAttachmentSnapshot(verifiedComposer);
 
-        if (isAttachmentReadySnapshot(verifiedSnapshot)) {
+        if (isExpectedAttachmentReadySnapshot(verifiedSnapshot, lastAttachBeforeSnapshot, expectedFileKey)) {
           return verifiedComposer;
         }
 
@@ -1296,20 +1299,14 @@
       return hasAttachmentSnapshot(snapshot) && !snapshot.hasPendingAttachmentWork;
     }
 
-    async function waitForAttachmentReady(composer, beforeSnapshot, timeoutMs) {
+    async function waitForAttachmentReady(composer, beforeSnapshot, timeoutMs, expectedFileKey) {
       let observedSnapshot = beforeSnapshot;
-      const beforeKey = getAttachmentSnapshotKey(beforeSnapshot);
-      let attachmentAccepted = false;
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < timeoutMs) {
         const liveComposer = findComposer() || composer;
-        attachmentAccepted = attachmentAccepted
-          || getAttachmentSnapshotKey(observedSnapshot) !== beforeKey
-          || observedSnapshot.attachmentCount > beforeSnapshot.attachmentCount
-          || observedSnapshot.fileInputCount > beforeSnapshot.fileInputCount;
 
-        if (attachmentAccepted && isAttachmentReadySnapshot(observedSnapshot)) {
+        if (isExpectedAttachmentReadySnapshot(observedSnapshot, beforeSnapshot, expectedFileKey)) {
           return liveComposer;
         }
 
@@ -1335,8 +1332,7 @@
 
       const finalComposer = findComposer() || composer;
       const finalSnapshot = captureComposerAttachmentSnapshot(finalComposer);
-      attachmentAccepted = attachmentAccepted || getAttachmentSnapshotKey(finalSnapshot) !== beforeKey;
-      return attachmentAccepted && isAttachmentReadySnapshot(finalSnapshot) ? finalComposer : null;
+      return isExpectedAttachmentReadySnapshot(finalSnapshot, beforeSnapshot, expectedFileKey) ? finalComposer : null;
     }
 
     function isImageReadyForSubmit(composer) {
@@ -1501,6 +1497,27 @@
       }
 
       return Array.isArray(snapshot.selectedFileKeys) && snapshot.selectedFileKeys.includes(expectedFileKey);
+    }
+
+    function isExpectedAttachmentReadySnapshot(snapshot, beforeSnapshot, expectedFileKey) {
+      if (!isAttachmentReadySnapshot(snapshot)) {
+        return false;
+      }
+
+      if (snapshotHasExpectedFile(snapshot, expectedFileKey)) {
+        return true;
+      }
+
+      if (!beforeSnapshot || typeof beforeSnapshot !== "object") {
+        return false;
+      }
+
+      if (!hasAttachmentSnapshot(beforeSnapshot) && hasAttachmentSnapshot(snapshot)) {
+        return true;
+      }
+
+      return Number(snapshot.attachmentCount) > Number(beforeSnapshot.attachmentCount)
+        || Number(snapshot.fileInputCount) > Number(beforeSnapshot.fileInputCount);
     }
 
     function hasPendingAttachmentWork(scope) {
