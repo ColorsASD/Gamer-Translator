@@ -1,0 +1,161 @@
+{
+  "mismatches": [
+    {
+      "consumer": "PySide6/Qt6Core.dll",
+      "provider": "icuuc.dll",
+      "version": "78.3.0.0",
+      "missing": [
+        "ucnv_open",
+        "ucnv_close",
+        "UCNV_FROM_U_CALLBACK_SUBSTITUTE",
+        "UCNV_TO_U_CALLBACK_SUBSTITUTE",
+        "ucnv_reset",
+        "ucnv_getMaxCharSize",
+        "ucnv_getName",
+        "ucnv_getToUCallBack",
+        "ucnv_getFromUCallBack",
+        "ucnv_setToUCallBack",
+        "ucnv_setFromUCallBack",
+        "ucnv_cbToUWriteUChars",
+        "ucnv_toUnicode",
+        "ucnv_cbFromUWriteUChars",
+        "ucnv_toUCountPending",
+        "ucnv_fromUCountPending",
+        "ucnv_getStandardName",
+        "ucnv_getAvailableName",
+        "ucnv_countAvailable",
+        "ucnv_fromUnicode"
+      ]
+    }
+  ],
+  "files": {
+    "PySide6/QtCore.pyd": {
+      "sha256": "74f96322c5e9cea73aefd2ed5870e5275336b31f552fcd32f12fc81d23f1bc6f",
+      "version": null
+    },
+    "PySide6/pyside6.abi3.dll": {
+      "sha256": "d0b5c701fb3a8ea839e72b602058f3960935156ebeca084893c54c99e54dd707",
+      "version": null
+    },
+    "shiboken6/shiboken6.abi3.dll": {
+      "sha256": "de3c6b2ed5f75c9ac0de4a6844b653b3b9d09263ce68c2b5fc25a96c5c3e8469",
+      "version": null
+    },
+    "python3.dll": {
+      "sha256": "76e7fd69a01081726308317d6e502721c2ba6792b48880dc1ef649c755788db7",
+      "version": "3.13.15150.1013"
+    },
+    "PySide6/Qt6Core.dll": {
+      "sha256": "d6a3c37c5263c5d418fc0e80b722bc9fca7c0859e6f635f9624a2fde00bdc653",
+      "version": "6.11.2.0"
+    },
+    "shiboken6/Shiboken.pyd": {
+      "sha256": "2f6f3a694f675b1dafdae26903191613c02866ab48e02591ae34ca1a3b1284f1",
+      "version": null
+    },
+    "PySide6/VCRUNTIME140_1.dll": {
+      "sha256": "48aa2783793ea18ab3c2c71d420d4fff9814e662a1ff810053c6e5250061a716",
+      "version": "14.44.35211.0"
+    },
+    "shiboken6/VCRUNTIME140_1.dll": {
+      "sha256": "fa577d54bd10a91e52472da784a619da6cf241af45f0a0c48b27e91fa0fe6104",
+      "version": "14.44.35211.0"
+    },
+    "vcruntime140_1.dll": {
+      "sha256": "a7146c08f89fe5b04541ab507cdb59ff7b44534d4ba3c668a426c6450a03434e",
+      "version": "14.51.36247.0"
+    },
+    "PySide6/VCRUNTIME140.dll": {
+      "sha256": "f893ae75a1a24eea174d982f94bc80ce2448201eaa919a73c0653a5657685de4",
+      "version": "14.44.35211.0"
+    },
+    "shiboken6/VCRUNTIME140.dll": {
+      "sha256": "de617641d82eac15595d2e39394163ac33e49bb032cf2c2ea0044ed39d3675e9",
+      "version": "14.44.35211.0"
+    },
+    "vcruntime140.dll": {
+      "sha256": "d1f4225df2cd877dbf130d5668a021dce3f94118455ff5ec952061c30afc9ce7",
+      "version": "14.51.36247.0"
+    },
+    "api-ms-win-crt-runtime-l1-1-0.dll": {
+      "sha256": "72adc1b3677e0814d9c4ebf0964000e84bb2acf67336c8963061665e44f78029",
+      "version": "10.0.26100.4654"
+    },
+    "api-ms-win-crt-heap-l1-1-0.dll": {
+      "sha256": "c71080cbcb43bf1f8f3e391deb12a582eb0abefc80946f340675a2c616e4feb4",
+      "version": "10.0.26100.4654"
+    },
+    "PySide6/MSVCP140.dll": {
+      "sha256": "4c667b706893593812cd111b369ba6a77f54d1f1b1ae87cf3bf37692663cfba2",
+      "version": "14.44.35211.0"
+    },
+    "msvcp140.dll": {
+      "sha256": "7c26614e1d733892c2deac7e245ce115504b1d80592dd0a01b08e3e5a55f89ca",
+      "version": "14.51.36247.0"
+    },
+    "shiboken6/MSVCP140.dll": {
+      "sha256": "fd4a8c046fa3fea9ca6132f50cf8a56cf1e783b2d3093ba5c85fa063bc6b3845",
+      "version": "14.44.35211.0"
+    },
+    "winrt/msvcp140.dll": {
+      "sha256": "75872c426555ac8af55b5a7f6d4aea8831af74353b22612850a2bfc40e3b67e1",
+      "version": "14.29.30157.0"
+    },
+    "api-ms-win-crt-string-l1-1-0.dll": {
+      "sha256": "fcf12466cc12fd3b73611fc0763a5a1f9d44e90349513c34a0c83b0f36421793",
+      "version": "10.0.26100.4654"
+    },
+    "api-ms-win-crt-stdio-l1-1-0.dll": {
+      "sha256": "900afc3989673c9bb1a687ed38c192f46db9e6ba6d11a668898a539e7fc23798",
+      "version": "10.0.26100.4654"
+    },
+    "api-ms-win-crt-convert-l1-1-0.dll": {
+      "sha256": "8b94662429171019fcd63c70bbf2095a075170599704a5e7dcdbe3da13f3a429",
+      "version": "10.0.26100.4654"
+    },
+    "api-ms-win-crt-math-l1-1-0.dll": {
+      "sha256": "d4fbcccbe29371cbce431e43b2eb4f7ba9a6f04a3d740a071f02457a505e9dc8",
+      "version": "10.0.26100.4654"
+    },
+    "api-ms-win-crt-filesystem-l1-1-0.dll": {
+      "sha256": "5a8ecebac32edf4e1f3c5c6c1c8ea1a1add6cda4f9c9cb26f752fb295bea6865",
+      "version": "10.0.26100.4654"
+    },
+    "api-ms-win-crt-environment-l1-1-0.dll": {
+      "sha256": "39e5929593709e8af3bc9e0a75ec1155778d6f4a247f4cdfc58928ad6db88434",
+      "version": "10.0.26100.4654"
+    },
+    "api-ms-win-core-synch-l1-2-0.dll": {
+      "sha256": "f6482bbec5612c39ecb4822787a333f2b7570f7a5f922a4059be41ba957bb372",
+      "version": "10.0.26100.4654"
+    },
+    "icuuc.dll": {
+      "sha256": "2882afacabd9d901762ab196c7a319b03051af39291e47fef51fcb69c26ab5b8",
+      "version": "78.3.0.0"
+    },
+    "PySide6/MSVCP140_1.dll": {
+      "sha256": "d419d24b0a76366f5c9d908b0e45fe70e9e9154bb8ad5f3de42070f2337f857b",
+      "version": "14.44.35211.0"
+    },
+    "shiboken6/MSVCP140_1.dll": {
+      "sha256": "7f556f0a0b944df7b64b916b344a070b7e6f6cf342194475594447ca88c07659",
+      "version": "14.44.35211.0"
+    },
+    "api-ms-win-crt-utility-l1-1-0.dll": {
+      "sha256": "5f8f26b216ade615b67a41f6fbbb910972fc6153315a65bb8f09912be50215b1",
+      "version": "10.0.26100.4654"
+    },
+    "api-ms-win-crt-time-l1-1-0.dll": {
+      "sha256": "886e57c4a6adb299b38f02945369f590a67da4e79a798359fc60aaa067212d7c",
+      "version": "10.0.26100.4654"
+    },
+    "api-ms-win-crt-locale-l1-1-0.dll": {
+      "sha256": "6c68648e524187e03c4ad9aaa4a99113c6ee9f29fb39cc0ed93f951975138e63",
+      "version": "10.0.26100.4654"
+    },
+    "icudt78.dll": {
+      "sha256": "63e5b8fbfb64f0550ecd1036822a95992315e3033fa02033e20efffbb3dfc63e",
+      "version": "78.3.0.0"
+    }
+  }
+}

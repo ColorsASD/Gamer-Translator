@@ -1,0 +1,29 @@
+{
+  "checkedAtUtc": "2026-08-30T17:48:10.9752370Z",
+  "processes": [
+    {
+      "ProcessId": 4148,
+      "ParentProcessId": 18620,
+      "Name": "pythonw.exe",
+      "CreationDate": "2026-08-30T19:04:14.042677+02:00",
+      "ExecutablePath": "C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Scripts\\pythonw.exe"
+    },
+    {
+      "ProcessId": 17380,
+      "ParentProcessId": 4148,
+      "Name": "pythonw.exe",
+      "CreationDate": "2026-08-30T19:04:14.18944+02:00",
+      "ExecutablePath": "C:\\Users\\juher\\AppData\\Local\\Programs\\Python\\GamerTranslator-Python31315\\pythonw.exe"
+    },
+    {
+      "ProcessId": 18576,
+      "ParentProcessId": 17380,
+      "Name": "QtWebEngineProcess.exe",
+      "CreationDate": "2026-08-30T19:04:31.983518+02:00",
+      "ExecutablePath": "C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PySide6\\.\\QtWebEngineProcess.exe"
+    }
+  ],
+  "temporaryDirectory": "C:\\Users\\juher\\AppData\\Local\\Temp\\gamer-translator-live-staging-7i777wi2",
+  "temporaryDirectoryExists": true,
+  "status": "A korabbi sajat staging folyamatok celzott leallitasa es takaritasa eszkozpolicy miatt fuggoben; jovahagyas kerve. Ez a lekerdezes csak olvasott."
+}

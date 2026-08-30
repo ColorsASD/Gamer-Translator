@@ -1,0 +1,25 @@
+{
+  "startedAt": "2026-08-30T17:12:08.225812+00:00",
+  "frozen": false,
+  "python": "3.13.15",
+  "openssl": "OpenSSL 3.0.21 9 Jun 2026",
+  "qt": "6.11.2",
+  "mode": "offline fixture; no live ChatGPT requests",
+  "checks": {
+    "window_and_webengine_start": true,
+    "isolated_profile_and_clipboard": true,
+    "repeated_quick_chat_response_storage_overlay_hide_show": true,
+    "png_attachment_native_pipeline": true,
+    "no_network_requests_or_native_hotkeys": true,
+    "native_rapidocr_and_windows_inference": true,
+    "clean_window_shutdown": true
+  },
+  "cycles": 3,
+  "ocr": {
+    "expected": "Hello gamer",
+    "rapidocr": "Hello gamer",
+    "windows": "Hello gamer"
+  },
+  "elapsedSeconds": 5.527,
+  "passed": true
+}

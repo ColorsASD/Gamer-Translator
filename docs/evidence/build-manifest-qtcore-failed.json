@@ -1,0 +1,53 @@
+{
+  "generatedAt": "2026-08-30T17:26:27.044418+00:00",
+  "executable": "C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\dist\\staging\\python313-final\\Gamer Translator.exe",
+  "bytes": 398996348,
+  "sha256": "6c93262a971096a829c3741d3c17c8b7ee4cc245e5eaca9da6da0f38da7216ca",
+  "entries": 3363,
+  "pythonModules": 1053,
+  "checks": {
+    "source:main.py": true,
+    "source:gamer_translator/defaults.py": true,
+    "source:gamer_translator/main_window.py": true,
+    "source:gamer_translator/ocr_service.py": true,
+    "source:gamer_translator/self_test.py": true,
+    "source:gamer_translator/settings_store.py": true,
+    "asset:gamer_translator/automation.js": true,
+    "asset:gamer_translator/assets/icon-128.png": true,
+    "runtime:QtWebEngineProcess.exe": true,
+    "runtime:Qt6WebEngineCore.dll": true,
+    "runtime:qtwebengine_resources.pak": true,
+    "runtime:icudtl.dat": true,
+    "runtime:qwindows.dll": true,
+    "runtime:onnxruntime_pybind11_state.pyd": true,
+    "runtime:Windows OCR": true,
+    "runtime:WinRT runtime": true,
+    "runtime:RapidOCR data": true,
+    "runtime:wordfreq Hungarian": true,
+    "runtime:wordfreq English": true,
+    "runtime:verified python313.dll": true,
+    "runtime:verified _ssl.pyd": true,
+    "runtime:verified libssl-3.dll": true,
+    "runtime:verified libcrypto-3.dll": true,
+    "PE:Windows x64 GUI": true
+  },
+  "sourceSha256": {
+    "main.py": "6992501d6c1ec6d3bb591e67ad712fc019f5fe6ad7e2cdc29185f680a1385139",
+    "gamer_translator/defaults.py": "f05496c0fd347f02fc69b2895cd9fcde717bc3aae5d2209b4f47651f76f1e797",
+    "gamer_translator/main_window.py": "c39eb4b8a5229deab3501ea2d6a93c3a796468248b1547cee8a5189148c22d64",
+    "gamer_translator/ocr_service.py": "2ad22bc2c9520f84adf0e90052bde76937fec3361111fe8d1a024a6209722e80",
+    "gamer_translator/self_test.py": "20fdc20030c0f4247a5b85f2a74c483c59b5274e6c777341ee511c0fcda5a2ed",
+    "gamer_translator/settings_store.py": "f0e848660fb1957004c2f9b2ef7ef8dc9a9df78a4bd0a5f5f0378d1e9398f532"
+  },
+  "buildRuntime": {
+    "python": "3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]",
+    "openssl": "OpenSSL 3.0.21 9 Jun 2026",
+    "executable": "C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Scripts\\python.exe",
+    "nativeSha256": {
+      "python313.dll": "e820bf024efd2b56bb2b82791e6b6ddc7303f070f8e72cba7637482a8a906238",
+      "_ssl.pyd": "8d2f51fa1dc929073a2ad8d1c7c0c911e8f695870dcf4dda2846f4b75a7f77fb",
+      "libssl-3.dll": "28c395290279fa4f4f54a57b85cd66d853895f925fefb8f6fdebc0d8b1cdd07c",
+      "libcrypto-3.dll": "09499e186cf0e434ffa17ad153aa9a66d6048c54a2c03b823e2a06c49d9affe4"
+    }
+  }
+}

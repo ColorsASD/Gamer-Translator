@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-08-30T17:44:14.804418+00:00",
+  "artifact": {
+    "path": "C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\dist\\staging\\verified\\Gamer Translator.exe",
+    "sha256": "465a14948960d4e4d836068462993ad97dc4f3859a0fe069b357775d184c8867",
+    "bytes": 381500794
+  },
+  "method": {
+    "archive_reader": "PyInstaller CArchiveReader, in-memory extract",
+    "pe_parser": "pefile 2024.8.26",
+    "max_symbol_exports": 200000,
+    "native_entry_extensions": [
+      ".dll",
+      ".pyd",
+      ".exe"
+    ],
+    "import_types": [
+      "normal",
+      "delay"
+    ],
+    "source_lookup_scope": "Kizarolag a megadott ket PATH-konyvtar kozvetlen DLL-fajljai, archive-basename metszet.",
+    "executable_started": false,
+    "native_payloads_written_to_disk": false
+  },
+  "sources": {
+    "codex_poppler": {
+      "directory": "C:\\Users\\juher\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\poppler\\Library\\bin",
+      "exists": true,
+      "same_basename_candidates": 5
+    },
+    "winget_mingw": {
+      "directory": "C:\\Users\\juher\\AppData\\Local\\Microsoft\\WinGet\\Packages\\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\\mingw64\\bin",
+      "exists": true,
+      "same_basename_candidates": 0
+    }
+  },
+  "native_entry_count": 360,
+  "parse_errors": [],
+  "matching_entry_count": 0,
+  "matching_entry_count_by_source": {
+    "codex_poppler": 0,
+    "winget_mingw": 0
+  },
+  "icu_import_consumers": {
+    "icuuc.dll": [
+      {
+        "consumer": "PySide6\\Qt6Core.dll",
+        "kind": "normal",
+        "symbol_count": 20,
+        "symbols": [
+          "ucnv_open",
+          "ucnv_close",
+          "UCNV_FROM_U_CALLBACK_SUBSTITUTE",
+          "UCNV_TO_U_CALLBACK_SUBSTITUTE",
+          "ucnv_reset",
+          "ucnv_getMaxCharSize",
+          "ucnv_getName",
+          "ucnv_getToUCallBack",
+          "ucnv_getFromUCallBack",
+          "ucnv_setToUCallBack",
+          "ucnv_setFromUCallBack",
+          "ucnv_cbToUWriteUChars",
+          "ucnv_toUnicode",
+          "ucnv_cbFromUWriteUChars",
+          "ucnv_toUCountPending",
+          "ucnv_fromUCountPending",
+          "ucnv_getStandardName",
+          "ucnv_getAvailableName",
+          "ucnv_countAvailable",
+          "ucnv_fromUnicode"
+        ]
+      }
+    ]
+  },
+  "matches": [],
+  "limitations": [
+    "A statikus es delay PE-importlista nem fedi le a LoadLibrary/GetProcAddress futasideju betolteseket.",
+    "A SHA-egyezes bizonyitja a fajlok azonossagat, de kulonosen a Microsoft API/CRT redisztribucios fajljainal nem bizonyit egyetlen kizarolagos eredeti forrast.",
+    "A fogyasztoi lista DLL-bazisneven kapcsol; Windows loader futasideju keresesi sorrendet nem szimulal.",
+    "Az eredmeny a megadott artifact SHA-ra es a ket forraskonyvtar vizsgalatkori allapotara vonatkozik."
+  ],
+  "comparison_with_previous": {
+    "previous_artifact_sha256": "6c93262a971096a829c3741d3c17c8b7ee4cc245e5eaca9da6da0f38da7216ca",
+    "previous_matching_entry_count": 48,
+    "previous_matching_entries_still_in_archive": [],
+    "removed_previous_matching_entries": [
+      "api-ms-win-core-console-l1-1-0.dll",
+      "api-ms-win-core-datetime-l1-1-0.dll",
+      "api-ms-win-core-debug-l1-1-0.dll",
+      "api-ms-win-core-errorhandling-l1-1-0.dll",
+      "api-ms-win-core-fibers-l1-1-0.dll",
+      "api-ms-win-core-fibers-l1-1-1.dll",
+      "api-ms-win-core-file-l1-1-0.dll",
+      "api-ms-win-core-file-l1-2-0.dll",
+      "api-ms-win-core-file-l2-1-0.dll",
+      "api-ms-win-core-handle-l1-1-0.dll",
+      "api-ms-win-core-heap-l1-1-0.dll",
+      "api-ms-win-core-interlocked-l1-1-0.dll",
+      "api-ms-win-core-kernel32-legacy-l1-1-1.dll",
+      "api-ms-win-core-libraryloader-l1-1-0.dll",
+      "api-ms-win-core-localization-l1-2-0.dll",
+      "api-ms-win-core-memory-l1-1-0.dll",
+      "api-ms-win-core-namedpipe-l1-1-0.dll",
+      "api-ms-win-core-processenvironment-l1-1-0.dll",
+      "api-ms-win-core-processthreads-l1-1-0.dll",
+      "api-ms-win-core-processthreads-l1-1-1.dll",
+      "api-ms-win-core-profile-l1-1-0.dll",
+      "api-ms-win-core-rtlsupport-l1-1-0.dll",
+      "api-ms-win-core-string-l1-1-0.dll",
+      "api-ms-win-core-synch-l1-1-0.dll",
+      "api-ms-win-core-synch-l1-2-0.dll",
+      "api-ms-win-core-sysinfo-l1-1-0.dll",
+      "api-ms-win-core-sysinfo-l1-2-0.dll",
+      "api-ms-win-core-timezone-l1-1-0.dll",
+      "api-ms-win-core-util-l1-1-0.dll",
+      "api-ms-win-crt-conio-l1-1-0.dll",
+      "api-ms-win-crt-convert-l1-1-0.dll",
+      "api-ms-win-crt-environment-l1-1-0.dll",
+      "api-ms-win-crt-filesystem-l1-1-0.dll",
+      "api-ms-win-crt-heap-l1-1-0.dll",
+      "api-ms-win-crt-locale-l1-1-0.dll",
+      "api-ms-win-crt-math-l1-1-0.dll",
+      "api-ms-win-crt-private-l1-1-0.dll",
+      "api-ms-win-crt-process-l1-1-0.dll",
+      "api-ms-win-crt-runtime-l1-1-0.dll",
+      "api-ms-win-crt-stdio-l1-1-0.dll",
+      "api-ms-win-crt-string-l1-1-0.dll",
+      "api-ms-win-crt-time-l1-1-0.dll",
+      "api-ms-win-crt-utility-l1-1-0.dll",
+      "icudt78.dll",
+      "icuuc.dll",
+      "libcrypto-3-x64.dll",
+      "libssl-3-x64.dll",
+      "ucrtbase.dll"
+    ],
+    "previous_native_entry_count": 408,
+    "current_native_entry_count": 360,
+    "current_total_archive_entry_count": 3315
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "target": "dist/staging/python313-final/Gamer Translator.exe",
+  "expectedBuildSha256": "6c93262a971096a829c3741d3c17c8b7ee4cc245e5eaca9da6da0f38da7216ca",
+  "before": {
+    "sha256": "6c93262a971096a829c3741d3c17c8b7ee4cc245e5eaca9da6da0f38da7216ca",
+    "lastWriteTimeUtc": "2026-08-30T17:26:01.7819232Z",
+    "sizeBytes": 398996348
+  },
+  "scan": {
+    "noThreatsText": true,
+    "rawLog": "docs/evidence/defender-qtcore-failed.txt",
+    "completedAt": "2026-08-30T17:27:47.1350425+00:00",
+    "remediationDisabled": true,
+    "args": [
+      "-Scan",
+      "-ScanType",
+      "3",
+      "-File",
+      "C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\dist\\staging\\python313-final\\Gamer Translator.exe",
+      "-DisableRemediation"
+    ],
+    "scanFinishedText": true,
+    "tool": "C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18.26070.9-0\\MpCmdRun.exe",
+    "startedAt": "2026-08-30T17:27:47.0683027+00:00",
+    "exitCode": 0
+  },
+  "after": {
+    "sha256": "6c93262a971096a829c3741d3c17c8b7ee4cc245e5eaca9da6da0f38da7216ca",
+    "lastWriteTimeUtc": "2026-08-30T17:26:01.7819232Z",
+    "sizeBytes": 398996348,
+    "authenticodeStatus": "NotSigned"
+  },
+  "defender": {
+    "realTimeProtectionEnabled": true,
+    "antivirusEnabled": true,
+    "signatureUpdatedAt": "2026-08-30T02:40:13.0000000+02:00",
+    "signatureVersion": "1.457.407.0",
+    "engine": "1.1.26070.7",
+    "platform": "4.18.26070.9"
+  },
+  "fileUnchanged": true,
+  "verdict": "completed_no_threats_found_file_unchanged",
+  "limitations": [
+    "Nem teljes sérülékenységmentességi bizonyíték.",
+    "A Defender házirendje és kizárásai nem változtak.",
+    "A -DisableRemediation tiltja a vizsgálati javító műveleteket.",
+    "Külső online fájlszkennerre kézi feltöltés nem történt; a Windows meglévő Defender-felhőházirendje változatlan."
+  ],
+  "artifactAcceptance": "rejected_qtcore_dll_import_failure"
+}

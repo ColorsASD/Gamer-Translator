@@ -1,0 +1,19 @@
+{
+  "startedAt": "2026-08-30T17:03:37.756835+00:00",
+  "frozen": false,
+  "python": "3.11.8",
+  "openssl": "OpenSSL 3.0.13 30 Jan 2024",
+  "qt": "6.11.2",
+  "mode": "offline fixture; no live ChatGPT requests",
+  "checks": {
+    "window_and_webengine_start": true,
+    "isolated_profile_and_clipboard": true,
+    "repeated_quick_chat_response_storage_overlay_hide_show": true,
+    "png_attachment_native_pipeline": true,
+    "no_network_requests_or_native_hotkeys": true,
+    "clean_window_shutdown": true
+  },
+  "cycles": 5,
+  "elapsedSeconds": 6.031,
+  "passed": true
+}

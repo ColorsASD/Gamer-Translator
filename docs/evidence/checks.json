@@ -1,0 +1,92 @@
+{
+  "generatedAt": "2026-08-30T17:47:46.353101+00:00",
+  "executable": "C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\dist\\staging\\verified\\Gamer Translator.exe",
+  "sha256": "465a14948960d4e4d836068462993ad97dc4f3859a0fe069b357775d184c8867",
+  "pythonTests": {
+    "passed": 70,
+    "failed": 0,
+    "seconds": 10.626,
+    "evidence": "unittest-python313.txt"
+  },
+  "javascriptTests": {
+    "passed": 13,
+    "failed": 0,
+    "evidence": "javascript-tests-final.txt"
+  },
+  "syntaxAndDependencyChecks": {
+    "pythonCompileall": 0,
+    "nodeCheck": 0,
+    "pipCheck": 0,
+    "gitDiffCheck": 0
+  },
+  "dependencyAudit": {
+    "packages": 48,
+    "knownFindings": 0,
+    "evidence": "pip-audit-python313.json"
+  },
+  "bandit": {
+    "linesOfCode": 4466,
+    "low": 34,
+    "medium": 0,
+    "high": 0,
+    "exitCode": 1,
+    "evidence": "bandit.json"
+  },
+  "archiveChecks": {
+    "passed": 32,
+    "failed": 0,
+    "evidence": "build-manifest.json"
+  },
+  "nativeProvenance": {
+    "files": 360,
+    "parseErrors": 0,
+    "popplerOrMingwMatches": 0,
+    "evidence": "frozen-path-contamination-verified.json"
+  },
+  "frozenExecution": {
+    "exitCode": 0,
+    "wallSeconds": 136.247,
+    "executable": "C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\dist\\staging\\verified\\Gamer Translator.exe",
+    "sha256": "465a14948960d4e4d836068462993ad97dc4f3859a0fe069b357775d184c8867",
+    "reportExists": true,
+    "report": {
+      "startedAt": "2026-08-30T17:40:26.710790+00:00",
+      "frozen": true,
+      "python": "3.13.15",
+      "openssl": "OpenSSL 3.0.21 9 Jun 2026",
+      "qt": "6.11.2",
+      "mode": "offline fixture; no live ChatGPT requests",
+      "checks": {
+        "window_and_webengine_start": true,
+        "isolated_profile_and_clipboard": true,
+        "repeated_quick_chat_response_storage_overlay_hide_show": true,
+        "png_attachment_native_pipeline": true,
+        "no_network_requests_or_native_hotkeys": true,
+        "native_rapidocr_and_windows_inference": true,
+        "clean_window_shutdown": true
+      },
+      "cycles": 109,
+      "ocr": {
+        "expected": "Hello gamer",
+        "rapidocr": "Hello gamer",
+        "windows": "Hello gamer"
+      },
+      "elapsedSeconds": 122.365,
+      "passed": true
+    }
+  },
+  "defender": {
+    "exitCode": 0,
+    "noThreatsText": true,
+    "fileUnchanged": true,
+    "evidence": "defender-final.json"
+  },
+  "authenticode": "NotSigned",
+  "limits": [
+    "One logged-out source-level live text sample only.",
+    "No OpenAI server deployment.",
+    "Signing certificate and authenticated test account not supplied.",
+    "OpenSSL upstream advisories reviewed; no full native CVE-free claim.",
+    "Old isolated staging process cleanup blocked by tool policy; approval requested."
+  ]
+}

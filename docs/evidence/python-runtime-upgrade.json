@@ -1,0 +1,222 @@
+{
+  "checkedAt": "2026-08-30T17:03:04.675482+00:00",
+  "python": "3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]",
+  "openssl": "OpenSSL 3.0.21 9 Jun 2026",
+  "executable": "C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Scripts\\python.exe",
+  "basePrefix": "C:\\Users\\juher\\AppData\\Local\\Programs\\Python\\GamerTranslator-Python31315",
+  "oldProjectEnvironment": {
+    "python": "3.11.8 (tags/v3.11.8:db85d51, Feb  6 2024, 22:03:32) [MSC v.1937 64 bit (AMD64)]",
+    "openssl": "OpenSSL 3.0.13 30 Jan 2024",
+    "executable": "C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv\\Scripts\\python.exe"
+  },
+  "pipCheck": {
+    "exitCode": 0,
+    "output": "No broken requirements found."
+  },
+  "windowsOcrProvider": "winrt-runtime 3.2.1",
+  "windowsOcrLanguages": [
+    "en-US",
+    "hu"
+  ],
+  "nativeSha256": {
+    "python313.dll": "e820bf024efd2b56bb2b82791e6b6ddc7303f070f8e72cba7637482a8a906238",
+    "_ssl.pyd": "8d2f51fa1dc929073a2ad8d1c7c0c911e8f695870dcf4dda2846f4b75a7f77fb",
+    "libssl-3.dll": "28c395290279fa4f4f54a57b85cd66d853895f925fefb8f6fdebc0d8b1cdd07c",
+    "libcrypto-3.dll": "09499e186cf0e434ffa17ad153aa9a66d6048c54a2c03b823e2a06c49d9affe4"
+  },
+  "packageCount": 48,
+  "packages": [
+    {
+      "name": "altgraph",
+      "version": "0.17.5"
+    },
+    {
+      "name": "antlr4-python3-runtime",
+      "version": "4.9.3"
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22"
+    },
+    {
+      "name": "charset-normalizer",
+      "version": "3.5.1"
+    },
+    {
+      "name": "colorama",
+      "version": "0.4.6"
+    },
+    {
+      "name": "colorlog",
+      "version": "6.12.0"
+    },
+    {
+      "name": "flatbuffers",
+      "version": "25.12.19"
+    },
+    {
+      "name": "ftfy",
+      "version": "6.3.1"
+    },
+    {
+      "name": "idna",
+      "version": "3.19"
+    },
+    {
+      "name": "langcodes",
+      "version": "3.5.1"
+    },
+    {
+      "name": "locate",
+      "version": "1.1.1"
+    },
+    {
+      "name": "msgpack",
+      "version": "1.2.2"
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6"
+    },
+    {
+      "name": "omegaconf",
+      "version": "2.3.1"
+    },
+    {
+      "name": "onnxruntime",
+      "version": "1.29.0"
+    },
+    {
+      "name": "opencv-python",
+      "version": "5.0.0.93"
+    },
+    {
+      "name": "packaging",
+      "version": "26.3"
+    },
+    {
+      "name": "pefile",
+      "version": "2024.8.26"
+    },
+    {
+      "name": "pillow",
+      "version": "12.3.0"
+    },
+    {
+      "name": "pip",
+      "version": "26.2.1"
+    },
+    {
+      "name": "protobuf",
+      "version": "7.36.0"
+    },
+    {
+      "name": "pyclipper",
+      "version": "1.4.0"
+    },
+    {
+      "name": "pyinstaller",
+      "version": "6.22.2"
+    },
+    {
+      "name": "pyinstaller-hooks-contrib",
+      "version": "2026.7"
+    },
+    {
+      "name": "PySide6",
+      "version": "6.11.2"
+    },
+    {
+      "name": "PySide6_Addons",
+      "version": "6.11.2"
+    },
+    {
+      "name": "PySide6_Essentials",
+      "version": "6.11.2"
+    },
+    {
+      "name": "pywin32-ctypes",
+      "version": "0.2.3"
+    },
+    {
+      "name": "PyYAML",
+      "version": "6.0.3"
+    },
+    {
+      "name": "rapidocr",
+      "version": "3.9.2"
+    },
+    {
+      "name": "regex",
+      "version": "2026.7.19"
+    },
+    {
+      "name": "requests",
+      "version": "2.34.2"
+    },
+    {
+      "name": "setuptools",
+      "version": "84.0.0"
+    },
+    {
+      "name": "shapely",
+      "version": "2.1.2"
+    },
+    {
+      "name": "shiboken6",
+      "version": "6.11.2"
+    },
+    {
+      "name": "six",
+      "version": "1.17.0"
+    },
+    {
+      "name": "tqdm",
+      "version": "4.70.0"
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0"
+    },
+    {
+      "name": "urllib3",
+      "version": "2.7.0"
+    },
+    {
+      "name": "wcwidth",
+      "version": "0.8.3"
+    },
+    {
+      "name": "winrt-runtime",
+      "version": "3.2.1"
+    },
+    {
+      "name": "winrt-Windows.Foundation",
+      "version": "3.2.1"
+    },
+    {
+      "name": "winrt-Windows.Foundation.Collections",
+      "version": "3.2.1"
+    },
+    {
+      "name": "winrt-Windows.Globalization",
+      "version": "3.2.1"
+    },
+    {
+      "name": "winrt-Windows.Graphics.Imaging",
+      "version": "3.2.1"
+    },
+    {
+      "name": "winrt-Windows.Media.Ocr",
+      "version": "3.2.1"
+    },
+    {
+      "name": "winrt-Windows.Storage.Streams",
+      "version": "3.2.1"
+    },
+    {
+      "name": "wordfreq",
+      "version": "3.1.1"
+    }
+  ]
+}

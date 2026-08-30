@@ -1,0 +1,11 @@
+{
+  "source": "https://www.python.org/downloads/release/python-31315/",
+  "download": "https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe",
+  "sha256": "edec09c4853aeae9ac36efb8c9f95b6b8e2fee65eee56d9767a8b7c69c574403",
+  "sha256MatchesOfficial": true,
+  "signatureStatus": "Valid",
+  "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US",
+  "issuer": "CN=Microsoft ID Verified CS EOC CA 04, O=Microsoft Corporation, C=US",
+  "thumbprint": "847785B686B2D3879731FA9AA3F1F5D48E85D99E",
+  "verifiedAt": "2026-08-30T16:57:01.8553667Z"
+}

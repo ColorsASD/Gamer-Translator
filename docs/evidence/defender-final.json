@@ -1,0 +1,50 @@
+{
+  "target": "dist/staging/verified/Gamer Translator.exe",
+  "expectedBuildSha256": "465a14948960d4e4d836068462993ad97dc4f3859a0fe069b357775d184c8867",
+  "before": {
+    "lastWriteTimeUtc": "2026-08-30T17:39:19.6934225Z",
+    "sizeBytes": 381500794,
+    "sha256": "465a14948960d4e4d836068462993ad97dc4f3859a0fe069b357775d184c8867"
+  },
+  "scan": {
+    "startedAt": "2026-08-30T17:41:19.4909023+00:00",
+    "remediationDisabled": true,
+    "args": [
+      "-Scan",
+      "-ScanType",
+      "3",
+      "-File",
+      "C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\dist\\staging\\verified\\Gamer Translator.exe",
+      "-DisableRemediation"
+    ],
+    "rawLog": "docs/evidence/defender-final.txt",
+    "scanFinishedText": true,
+    "noThreatsText": true,
+    "exitCode": 0,
+    "completedAt": "2026-08-30T17:41:19.5579046+00:00",
+    "tool": "C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18.26070.9-0\\MpCmdRun.exe"
+  },
+  "after": {
+    "lastWriteTimeUtc": "2026-08-30T17:39:19.6934225Z",
+    "sizeBytes": 381500794,
+    "authenticodeStatus": "NotSigned",
+    "sha256": "465a14948960d4e4d836068462993ad97dc4f3859a0fe069b357775d184c8867"
+  },
+  "defender": {
+    "antivirusEnabled": true,
+    "platform": "4.18.26070.9",
+    "engine": "1.1.26070.7",
+    "signatureVersion": "1.457.407.0",
+    "realTimeProtectionEnabled": true,
+    "signatureUpdatedAt": "2026-08-30T02:40:13.0000000+02:00"
+  },
+  "fileUnchanged": true,
+  "verdict": "completed_no_threats_found_file_unchanged",
+  "limitations": [
+    "Nem teljes sérülékenységmentességi bizonyíték.",
+    "A Defender házirendje és kizárásai nem változtak.",
+    "A -DisableRemediation tiltja a vizsgálati javító műveleteket.",
+    "Külső online fájlszkennerre kézi feltöltés nem történt; a Windows meglévő Defender-felhőházirendje változatlan.",
+    "A teljes EXE futási próba külön ellenőrzés; ezt a Defender-eredmény nem igazolja."
+  ]
+}

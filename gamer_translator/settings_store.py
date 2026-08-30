@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,7 +59,7 @@ class AppSettings:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "AppSettings":
-        raw = raw or {}
+        raw = raw if isinstance(raw, dict) else {}
         type_out_hotkey = str(raw.get("typeOutHotkey", DEFAULT_SETTINGS["typeOutHotkey"]) or DEFAULT_SETTINGS["typeOutHotkey"])
         screen_clip_hotkey = str(raw.get("screenClipHotkey", DEFAULT_SETTINGS["screenClipHotkey"]) or DEFAULT_SETTINGS["screenClipHotkey"])
         quick_chat_hotkey = str(raw.get("quickChatHotkey", DEFAULT_SETTINGS["quickChatHotkey"]) or DEFAULT_SETTINGS["quickChatHotkey"])
@@ -87,24 +88,24 @@ class AppSettings:
             prompt_template = DEFAULT_BIDIRECTIONAL_PROMPT
 
         return cls(
-            monitoring_enabled=bool(raw.get("monitoringEnabled", DEFAULT_SETTINGS["monitoringEnabled"])),
+            monitoring_enabled=coerce_bool(raw.get("monitoringEnabled"), DEFAULT_SETTINGS["monitoringEnabled"]),
             chatgpt_url=str(raw.get("chatgptUrl", DEFAULT_SETTINGS["chatgptUrl"]) or DEFAULT_SETTINGS["chatgptUrl"]),
-            keep_chatgpt_in_background=bool(raw.get("keepChatGptInBackground", DEFAULT_SETTINGS["keepChatGptInBackground"])),
-            game_mode_enabled=bool(raw.get("gameModeEnabled", DEFAULT_SETTINGS["gameModeEnabled"])),
+            keep_chatgpt_in_background=coerce_bool(raw.get("keepChatGptInBackground"), DEFAULT_SETTINGS["keepChatGptInBackground"]),
+            game_mode_enabled=coerce_bool(raw.get("gameModeEnabled"), DEFAULT_SETTINGS["gameModeEnabled"]),
             prompt_template=prompt_template,
             auto_submit=True,
-            copy_response_to_clipboard=bool(raw.get("copyResponseToClipboard", DEFAULT_SETTINGS["copyResponseToClipboard"])),
-            ocr_text_from_clipboard_image=bool(raw.get("ocrTextFromClipboardImage", DEFAULT_SETTINGS["ocrTextFromClipboardImage"])),
-            webview_gpu_acceleration_enabled=bool(raw.get("webViewGpuAccelerationEnabled", DEFAULT_SETTINGS["webViewGpuAccelerationEnabled"])),
-            type_out_hotkey_enabled=bool(raw.get("typeOutHotkeyEnabled", DEFAULT_SETTINGS["typeOutHotkeyEnabled"])),
+            copy_response_to_clipboard=coerce_bool(raw.get("copyResponseToClipboard"), DEFAULT_SETTINGS["copyResponseToClipboard"]),
+            ocr_text_from_clipboard_image=coerce_bool(raw.get("ocrTextFromClipboardImage"), DEFAULT_SETTINGS["ocrTextFromClipboardImage"]),
+            webview_gpu_acceleration_enabled=coerce_bool(raw.get("webViewGpuAccelerationEnabled"), DEFAULT_SETTINGS["webViewGpuAccelerationEnabled"]),
+            type_out_hotkey_enabled=coerce_bool(raw.get("typeOutHotkeyEnabled"), DEFAULT_SETTINGS["typeOutHotkeyEnabled"]),
             type_out_hotkey=type_out_hotkey,
-            screen_clip_hotkey_enabled=bool(raw.get("screenClipHotkeyEnabled", DEFAULT_SETTINGS["screenClipHotkeyEnabled"])),
+            screen_clip_hotkey_enabled=coerce_bool(raw.get("screenClipHotkeyEnabled"), DEFAULT_SETTINGS["screenClipHotkeyEnabled"]),
             screen_clip_hotkey=screen_clip_hotkey,
-            quick_chat_hotkey_enabled=bool(raw.get("quickChatHotkeyEnabled", DEFAULT_SETTINGS["quickChatHotkeyEnabled"])),
+            quick_chat_hotkey_enabled=coerce_bool(raw.get("quickChatHotkeyEnabled"), DEFAULT_SETTINGS["quickChatHotkeyEnabled"]),
             quick_chat_hotkey=quick_chat_hotkey,
-            overlay_opacity_percent=coerce_int(raw.get("overlayOpacityPercent"), DEFAULT_SETTINGS["overlayOpacityPercent"]),
-            overlay_duration_seconds=coerce_int(raw.get("overlayDurationSeconds"), DEFAULT_SETTINGS["overlayDurationSeconds"]),
-            page_ready_timeout_ms=coerce_int(raw.get("pageReadyTimeoutMs"), DEFAULT_SETTINGS["pageReadyTimeoutMs"]),
+            overlay_opacity_percent=max(1, min(100, coerce_int(raw.get("overlayOpacityPercent"), DEFAULT_SETTINGS["overlayOpacityPercent"]))),
+            overlay_duration_seconds=max(1, min(120, coerce_int(raw.get("overlayDurationSeconds"), DEFAULT_SETTINGS["overlayDurationSeconds"]))),
+            page_ready_timeout_ms=max(1000, min(120000, coerce_int(raw.get("pageReadyTimeoutMs"), DEFAULT_SETTINGS["pageReadyTimeoutMs"]))),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -138,7 +139,7 @@ class LastRunStatus:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "LastRunStatus":
-        raw = raw or {}
+        raw = raw if isinstance(raw, dict) else {}
         return cls(
             at=str(raw.get("at", "") or ""),
             message=str(raw.get("message", "") or ""),
@@ -190,12 +191,12 @@ class SettingsStore:
         if self._document_cache is not None:
             return dict(self._document_cache)
 
-        if not self.config_path.exists():
-            return {}
-
         try:
             document = json.loads(self.config_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, UnicodeError, OSError):
+            return {}
+
+        if not isinstance(document, dict):
             return {}
 
         self._document_cache = dict(document)
@@ -205,17 +206,39 @@ class SettingsStore:
         if self._document_cache == document:
             return
 
-        self.config_path.write_text(
-            json.dumps(document, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        # Az atomikus csere megszakadt mentéskor is megőrzi az előző beállításokat.
+        temporary_path: Path | None = None
+
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.root_dir, prefix=".settings-", suffix=".tmp", delete=False) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                json.dump(document, temporary_file, ensure_ascii=False, indent=2)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+
+            os.replace(temporary_path, self.config_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
         self._document_cache = dict(document)
+
+
+def coerce_bool(value: Any, fallback: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    # A kézzel szerkesztett "false" érték sem kapcsolhatja be a vágólapfigyelést.
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+
+    return bool(fallback)
 
 
 def coerce_int(value: Any, fallback: int) -> int:
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return int(fallback)
 
     return parsed

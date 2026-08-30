@@ -1,0 +1,810 @@
+{
+  "errors": [],
+  "generated_at": "2026-08-30T17:30:51Z",
+  "metrics": {
+    ".\\main.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 147,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "_totals": {
+      "CONFIDENCE.HIGH": 33,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 1,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 34,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 4466,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "gamer_translator\\__init__.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 1,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "gamer_translator\\defaults.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 184,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "gamer_translator\\main_window.py": {
+      "CONFIDENCE.HIGH": 9,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 1,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 10,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 2994,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "gamer_translator\\ocr_service.py": {
+      "CONFIDENCE.HIGH": 7,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 7,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 703,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "gamer_translator\\self_test.py": {
+      "CONFIDENCE.HIGH": 17,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 17,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 240,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "gamer_translator\\settings_store.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 197,
+      "nosec": 0,
+      "skipped_tests": 0
+    }
+  },
+  "results": [
+    {
+      "code": "7 import os\n8 import subprocess\n9 import sys\n",
+      "col_offset": 0,
+      "end_col_offset": 17,
+      "filename": "gamer_translator\\main_window.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Consider possible security implications associated with the subprocess module.",
+      "line_number": 8,
+      "line_range": [
+        8
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess",
+      "test_id": "B404",
+      "test_name": "blacklist"
+    },
+    {
+      "code": "1951             else:\n1952                 subprocess.Popen(restart_command, start_new_session=True, close_fds=True)\n1953         except Exception as error:  # noqa: BLE001\n",
+      "col_offset": 16,
+      "end_col_offset": 89,
+      "filename": "gamer_translator\\main_window.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "subprocess call - check for execution of untrusted input.",
+      "line_number": 1952,
+      "line_range": [
+        1952
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html",
+      "test_id": "B603",
+      "test_name": "subprocess_without_shell_equals_true"
+    },
+    {
+      "code": "2049         powershell_command = str(powershell_executable) if powershell_executable.exists() else \"powershell.exe\"\n2050         subprocess.Popen(\n2051             [\n2052                 powershell_command,\n2053                 \"-NoProfile\",\n2054                 \"-ExecutionPolicy\",\n2055                 \"Bypass\",\n2056                 \"-WindowStyle\",\n2057                 \"Hidden\",\n2058                 \"-File\",\n2059                 str(script_path),\n2060             ],\n2061             creationflags=creationflags,\n2062             close_fds=True,\n2063         )\n2064 \n",
+      "col_offset": 8,
+      "end_col_offset": 9,
+      "filename": "gamer_translator\\main_window.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "subprocess call - check for execution of untrusted input.",
+      "line_number": 2050,
+      "line_range": [
+        2050,
+        2051,
+        2052,
+        2053,
+        2054,
+        2055,
+        2056,
+        2057,
+        2058,
+        2059,
+        2060,
+        2061,
+        2062,
+        2063
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html",
+      "test_id": "B603",
+      "test_name": "subprocess_without_shell_equals_true"
+    },
+    {
+      "code": "2513             )\n2514         except Exception:\n2515             pass\n2516 \n",
+      "col_offset": 8,
+      "end_col_offset": 16,
+      "filename": "gamer_translator\\main_window.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 2514,
+      "line_range": [
+        2514,
+        2515
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "2586             progress_handler(progress)\n2587         except Exception:\n2588             pass\n2589 \n",
+      "col_offset": 8,
+      "end_col_offset": 16,
+      "filename": "gamer_translator\\main_window.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 2587,
+      "line_range": [
+        2587,
+        2588
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "2757                     kernel32.SetThreadPriority(current_thread, previous_priority)\n2758                 except Exception:  # noqa: BLE001\n2759                     pass\n2760 \n",
+      "col_offset": 16,
+      "end_col_offset": 24,
+      "filename": "gamer_translator\\main_window.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 2758,
+      "line_range": [
+        2758,
+        2759
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "3154         try:\n3155             os.startfile(\"ms-screenclip:\")\n3156             self._set_live_status(f\"A Windows k\u00e9pkiv\u00e1g\u00f3 megnyitva: {self.settings.screen_clip_hotkey}\")\n",
+      "col_offset": 12,
+      "end_col_offset": 42,
+      "filename": "gamer_translator\\main_window.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Starting a process without a shell.",
+      "line_number": 3155,
+      "line_range": [
+        3155
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b606_start_process_with_no_shell.html",
+      "test_id": "B606",
+      "test_name": "start_process_with_no_shell"
+    },
+    {
+      "code": "3154         try:\n3155             os.startfile(\"ms-screenclip:\")\n3156             self._set_live_status(f\"A Windows k\u00e9pkiv\u00e1g\u00f3 megnyitva: {self.settings.screen_clip_hotkey}\")\n",
+      "col_offset": 12,
+      "end_col_offset": 42,
+      "filename": "gamer_translator\\main_window.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Starting a process with a partial executable path",
+      "line_number": 3155,
+      "line_range": [
+        3155
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b607_start_process_with_partial_path.html",
+      "test_id": "B607",
+      "test_name": "start_process_with_partial_path"
+    },
+    {
+      "code": "3465                             progress_handler(progress)\n3466                         except Exception:\n3467                             pass\n3468 \n",
+      "col_offset": 24,
+      "end_col_offset": 32,
+      "filename": "gamer_translator\\main_window.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 3466,
+      "line_range": [
+        3466,
+        3467
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "3495                 )\n3496             except Exception:\n3497                 pass\n3498 \n",
+      "col_offset": 12,
+      "end_col_offset": 20,
+      "filename": "gamer_translator\\main_window.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 3496,
+      "line_range": [
+        3496,
+        3497
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "614     async def _run_windows_ocr_async(self, image_bytes: bytes, language_tag: str) -> str:\n615         assert InMemoryRandomAccessStream is not None\n616         assert DataWriter is not None\n",
+      "col_offset": 8,
+      "end_col_offset": 53,
+      "filename": "gamer_translator\\ocr_service.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 615,
+      "line_range": [
+        615
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "615         assert InMemoryRandomAccessStream is not None\n616         assert DataWriter is not None\n617         assert BitmapDecoder is not None\n",
+      "col_offset": 8,
+      "end_col_offset": 37,
+      "filename": "gamer_translator\\ocr_service.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 616,
+      "line_range": [
+        616
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "616         assert DataWriter is not None\n617         assert BitmapDecoder is not None\n618         assert OcrEngine is not None\n",
+      "col_offset": 8,
+      "end_col_offset": 40,
+      "filename": "gamer_translator\\ocr_service.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 617,
+      "line_range": [
+        617
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "617         assert BitmapDecoder is not None\n618         assert OcrEngine is not None\n619         assert Language is not None\n",
+      "col_offset": 8,
+      "end_col_offset": 36,
+      "filename": "gamer_translator\\ocr_service.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 618,
+      "line_range": [
+        618
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "618         assert OcrEngine is not None\n619         assert Language is not None\n620 \n",
+      "col_offset": 8,
+      "end_col_offset": 35,
+      "filename": "gamer_translator\\ocr_service.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 619,
+      "line_range": [
+        619
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "893             line_items = matched_line[\"items\"]\n894             assert isinstance(line_items, list)\n895             line_items.append(item)\n",
+      "col_offset": 12,
+      "end_col_offset": 47,
+      "filename": "gamer_translator\\ocr_service.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 894,
+      "line_range": [
+        894
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "903             line_items = line[\"items\"]\n904             assert isinstance(line_items, list)\n905             line_text = \" \".join(str(entry[\"text\"]) for entry in sorted(line_items, key=lambda current: float(current[\"left\"])))\n",
+      "col_offset": 12,
+      "end_col_offset": 47,
+      "filename": "gamer_translator\\ocr_service.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 904,
+      "line_range": [
+        904
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "184                 window._wait_with_events(30)\n185             assert loaded == [True], \"Az offline oldal nem t\u00f6lt\u0151d\u00f6tt be.\"\n186             window.page.loadFinished.disconnect(loaded.append)\n",
+      "col_offset": 12,
+      "end_col_offset": 76,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 185,
+      "line_range": [
+        185
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "188             report[\"checks\"][\"window_and_webengine_start\"] = True\n189             assert window.profile.isOffTheRecord()\n190             assert not window.page.settings().testAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard)\n",
+      "col_offset": 12,
+      "end_col_offset": 50,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 189,
+      "line_range": [
+        189
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "189             assert window.profile.isOffTheRecord()\n190             assert not window.page.settings().testAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard)\n191             report[\"checks\"][\"isolated_profile_and_clipboard\"] = True\n",
+      "col_offset": 12,
+      "end_col_offset": 121,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 190,
+      "line_range": [
+        190
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "195                 count = window._run_javascript(\"document.body.dataset.submitCount\", timeout_ms=5000)\n196                 assert int(count) == report[\"cycles\"] + 1, \"Hi\u00e1nyz\u00f3 vagy ism\u00e9telt bek\u00fcld\u00e9s.\"\n197                 assert window.last_translated_text == \"Offline ford\u00edt\u00e1s elk\u00e9sz\u00fclt.\", window.last_run_status\n",
+      "col_offset": 16,
+      "end_col_offset": 97,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 196,
+      "line_range": [
+        196
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "196                 assert int(count) == report[\"cycles\"] + 1, \"Hi\u00e1nyz\u00f3 vagy ism\u00e9telt bek\u00fcld\u00e9s.\"\n197                 assert window.last_translated_text == \"Offline ford\u00edt\u00e1s elk\u00e9sz\u00fclt.\", window.last_run_status\n198                 assert window.test_clipboard.text == window.last_translated_text\n",
+      "col_offset": 16,
+      "end_col_offset": 111,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 197,
+      "line_range": [
+        197
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "197                 assert window.last_translated_text == \"Offline ford\u00edt\u00e1s elk\u00e9sz\u00fclt.\", window.last_run_status\n198                 assert window.test_clipboard.text == window.last_translated_text\n199                 assert store.load_last_translated_text() == window.last_translated_text\n",
+      "col_offset": 16,
+      "end_col_offset": 80,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 198,
+      "line_range": [
+        198
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "198                 assert window.test_clipboard.text == window.last_translated_text\n199                 assert store.load_last_translated_text() == window.last_translated_text\n200                 assert not window.browser_interaction_active and not window.clipboard_translation_in_progress\n",
+      "col_offset": 16,
+      "end_col_offset": 87,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 199,
+      "line_range": [
+        199
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "199                 assert store.load_last_translated_text() == window.last_translated_text\n200                 assert not window.browser_interaction_active and not window.clipboard_translation_in_progress\n201                 report[\"cycles\"] += 1\n",
+      "col_offset": 16,
+      "end_col_offset": 109,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 200,
+      "line_range": [
+        200
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "203                 window._wait_with_events(320)\n204                 assert window.drawer_open\n205                 window.close_drawer()\n",
+      "col_offset": 16,
+      "end_col_offset": 41,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 204,
+      "line_range": [
+        204
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "216             payload = window._read_clipboard_image_payload()\n217             assert payload is not None\n218             window._process_clipboard_translation(payload)\n",
+      "col_offset": 12,
+      "end_col_offset": 38,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 217,
+      "line_range": [
+        217
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "218             window._process_clipboard_translation(payload)\n219             assert window._run_javascript(\"document.body.dataset.fileCount\", timeout_ms=5000) == \"1\"\n220             assert int(window._run_javascript(\"document.body.dataset.submitCount\", timeout_ms=5000)) == report[\"cycles\"] + 1\n",
+      "col_offset": 12,
+      "end_col_offset": 100,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 219,
+      "line_range": [
+        219
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "219             assert window._run_javascript(\"document.body.dataset.fileCount\", timeout_ms=5000) == \"1\"\n220             assert int(window._run_javascript(\"document.body.dataset.submitCount\", timeout_ms=5000)) == report[\"cycles\"] + 1\n221             assert window.test_clipboard.text == \"Offline ford\u00edt\u00e1s elk\u00e9sz\u00fclt.\"\n",
+      "col_offset": 12,
+      "end_col_offset": 124,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 220,
+      "line_range": [
+        220
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "220             assert int(window._run_javascript(\"document.body.dataset.submitCount\", timeout_ms=5000)) == report[\"cycles\"] + 1\n221             assert window.test_clipboard.text == \"Offline ford\u00edt\u00e1s elk\u00e9sz\u00fclt.\"\n222             report[\"checks\"][\"png_attachment_native_pipeline\"] = True\n",
+      "col_offset": 12,
+      "end_col_offset": 82,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 221,
+      "line_range": [
+        221
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "222             report[\"checks\"][\"png_attachment_native_pipeline\"] = True\n223             assert not window.network_blocker.blocked\n224             assert not window.registered_hotkeys and window.keyboard_hook_handle is None\n",
+      "col_offset": 12,
+      "end_col_offset": 53,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 223,
+      "line_range": [
+        223
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "223             assert not window.network_blocker.blocked\n224             assert not window.registered_hotkeys and window.keyboard_hook_handle is None\n225             report[\"checks\"][\"no_network_requests_or_native_hotkeys\"] = True\n",
+      "col_offset": 12,
+      "end_col_offset": 88,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 224,
+      "line_range": [
+        224
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "245                 report[\"ocr\"] = {\"expected\": \"Hello gamer\", \"rapidocr\": rapid_text, \"windows\": windows_text}\n246                 assert rapid_text.strip() == \"Hello gamer\", \"A csomagolt RapidOCR pr\u00f3b\u00e1ja sikertelen.\"\n247                 assert windows_text.strip() == \"Hello gamer\", \"A csomagolt Windows OCR pr\u00f3b\u00e1ja sikertelen.\"\n",
+      "col_offset": 16,
+      "end_col_offset": 104,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 246,
+      "line_range": [
+        246
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "246                 assert rapid_text.strip() == \"Hello gamer\", \"A csomagolt RapidOCR pr\u00f3b\u00e1ja sikertelen.\"\n247                 assert windows_text.strip() == \"Hello gamer\", \"A csomagolt Windows OCR pr\u00f3b\u00e1ja sikertelen.\"\n248                 report[\"checks\"][\"native_rapidocr_and_windows_inference\"] = True\n",
+      "col_offset": 16,
+      "end_col_offset": 109,
+      "filename": "gamer_translator\\self_test.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 247,
+      "line_range": [
+        247
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    }
+  ]
+}

@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import logging
+import math
+import os
 import re
+import tempfile
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from statistics import mean, median
 from typing import Iterable
+from urllib.parse import urlparse
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
@@ -22,6 +27,7 @@ from .settings_store import default_app_data_dir
 
 LOGGER = logging.getLogger("gamer_translator.ocr")
 HUNGARIAN_WORD_PATTERN = re.compile(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]+")
+OCR_WORD_PATTERN = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*", re.UNICODE)
 FAST_VARIANT_NAMES = (
     "eredeti",
     "alap_kontrasztos",
@@ -38,8 +44,12 @@ WINDOWS_FALLBACK_VARIANT_NAMES = (
     "kuszobolt_160",
 )
 MAX_SOURCE_IMAGE_EDGE = 1700
+MAX_SOURCE_IMAGE_PIXELS = 40_000_000
+MAX_SOURCE_IMAGE_BYTES = 64 * 1024 * 1024
 OCR_VARIANT_COOLDOWN_SECONDS = 0.012
 DEFAULT_OCR_CANDIDATE_COUNT = 5
+OVERLAP_RECOVERY_VARIANT_NAMES = ("eredeti", "szurke_alap")
+MAX_OVERLAP_RECOVERY_GROUPS = 8
 AMBIGUOUS_HUNGARIAN_GROUPS: dict[str, tuple[str, ...]] = {
     "a": ("a", "á"),
     "á": ("a", "á"),
@@ -58,19 +68,27 @@ AMBIGUOUS_HUNGARIAN_GROUPS: dict[str, tuple[str, ...]] = {
 }
 
 try:
-    from winsdk.windows.globalization import Language
-    from winsdk.windows.graphics.imaging import BitmapDecoder
-    from winsdk.windows.media.ocr import OcrEngine
-    from winsdk.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
+    from winrt.windows.globalization import Language
+    from winrt.windows.graphics.imaging import BitmapDecoder
+    from winrt.windows.media.ocr import OcrEngine
+    from winrt.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
 
     WINDOWS_OCR_AVAILABLE = True
 except ImportError:
-    Language = None
-    BitmapDecoder = None
-    OcrEngine = None
-    DataWriter = None
-    InMemoryRandomAccessStream = None
-    WINDOWS_OCR_AVAILABLE = False
+    try:
+        # A korábbi Python 3.11 fejlesztői környezet olvasási kompatibilitása.
+        from winsdk.windows.globalization import Language
+        from winsdk.windows.graphics.imaging import BitmapDecoder
+        from winsdk.windows.media.ocr import OcrEngine
+        from winsdk.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
+        WINDOWS_OCR_AVAILABLE = True
+    except ImportError:
+        Language = None
+        BitmapDecoder = None
+        OcrEngine = None
+        DataWriter = None
+        InMemoryRandomAccessStream = None
+        WINDOWS_OCR_AVAILABLE = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,10 +214,13 @@ class OCRService:
         return selected_candidates
 
     def _unique_candidate_count(self, candidates: Iterable[OCRCandidate]) -> int:
-        return len(self._select_unique_candidates(candidates, DEFAULT_OCR_CANDIDATE_COUNT))
+        return len({candidate.text.strip() for candidate in candidates if candidate.text.strip()})
 
     def _can_stop_fast_pass(self, ranked_candidates: list[OCRCandidate], minimum_candidate_count: int) -> bool:
         if self._unique_candidate_count(ranked_candidates) < max(1, minimum_candidate_count):
+            return False
+
+        if self.windows_language_tags and len({candidate.engine_name for candidate in ranked_candidates}) < 2:
             return False
 
         return self._is_fast_pass_enough(ranked_candidates)
@@ -215,6 +236,7 @@ class OCRService:
             return self.engine
 
         self._ensure_assets()
+        det_asset, cls_asset, rec_asset = self._required_assets()
         self.engine = RapidOCR(
             params={
                 "Global.log_level": "ERROR",
@@ -222,33 +244,63 @@ class OCRService:
                 "Det.lang_type": LangDet.MULTI,
                 "Det.model_type": ModelType.MOBILE,
                 "Det.ocr_version": OCRVersion.PPOCRV4,
-                "Det.model_path": str(self.root_dir / "Multilingual_PP-OCRv3_det_infer.onnx"),
+                "Det.model_path": str(self.root_dir / det_asset.filename),
                 "Cls.engine_type": EngineType.ONNXRUNTIME,
                 "Cls.lang_type": LangDet.CH,
                 "Cls.model_type": ModelType.MOBILE,
                 "Cls.ocr_version": OCRVersion.PPOCRV4,
-                "Cls.model_path": str(self.root_dir / "ch_ppocr_mobile_v2.0_cls_infer.onnx"),
+                "Cls.model_path": str(self.root_dir / cls_asset.filename),
                 "Rec.engine_type": EngineType.ONNXRUNTIME,
                 "Rec.lang_type": LangRec.LATIN,
                 "Rec.model_type": ModelType.MOBILE,
                 "Rec.ocr_version": OCRVersion.PPOCRV5,
-                "Rec.model_path": str(self.root_dir / "latin_PP-OCRv5_rec_mobile_infer.onnx"),
-                "Rec.rec_keys_path": str(self._resolve_rec_keys_path()),
+                "Rec.model_path": str(self.root_dir / rec_asset.filename),
+                # A hitelesített ONNX modell saját karakterkészletet tartalmaz.
+                # Nem kell hozzá a RapidOCR régi, megszűnt szótárútvonal-API-ja.
             }
         )
         return self.engine
 
     def _ensure_assets(self) -> None:
         for asset in self._required_assets():
-            DownloadFile.run(
-                DownloadFileInput(
-                    file_url=asset.url,
-                    save_path=self.root_dir / asset.filename,
-                    sha256=asset.sha256,
-                    logger=LOGGER,
-                    verbose=False,
+            if not asset.sha256 or re.fullmatch(r"[0-9a-fA-F]{64}", asset.sha256) is None:
+                raise RuntimeError("Az OCR modell ellenőrzőösszege hiányzik vagy hibás.")
+
+            if urlparse(asset.url).scheme != "https" or Path(asset.filename).name != asset.filename:
+                raise RuntimeError("Az OCR modell letöltési adatai érvénytelenek.")
+
+            expected_sha256 = asset.sha256.lower()
+            target_path = self.root_dir / asset.filename
+
+            if target_path.is_file() and self._file_sha256(target_path) == expected_sha256:
+                continue
+
+            # A RapidOCR az új letöltést nem ellenőrzi; csak hiteles modell kerülhet betöltésre.
+            with tempfile.TemporaryDirectory(dir=self.root_dir, prefix=".download-") as temporary_dir:
+                download_path = Path(temporary_dir) / asset.filename
+                DownloadFile.run(
+                    DownloadFileInput(
+                        file_url=asset.url,
+                        save_path=download_path,
+                        sha256=expected_sha256,
+                        logger=LOGGER,
+                        verbose=False,
+                    )
                 )
-            )
+
+                if self._file_sha256(download_path) != expected_sha256:
+                    raise RuntimeError("Az OCR modell ellenőrzőösszege eltér a várt értéktől.")
+
+                os.replace(download_path, target_path)
+
+    def _file_sha256(self, path: Path) -> str:
+        checksum = hashlib.sha256()
+
+        with path.open("rb") as model_file:
+            for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
+                checksum.update(chunk)
+
+        return checksum.hexdigest()
 
     def _required_assets(self) -> tuple[OCRAsset, ...]:
         det_info = InferSession.get_model_url(
@@ -295,17 +347,23 @@ class OCRService:
             ),
         )
 
-    def _resolve_rec_keys_path(self) -> Path:
-        packaged_dict_path = InferSession.DEFAULT_MODEL_PATH / "ppocrv5_dict.txt"
-
-        if packaged_dict_path.exists():
-            return packaged_dict_path
-
-        raise FileNotFoundError("A RapidOCR PP-OCRv5 szótárfájlja nem található.")
-
     def _load_image(self, image_bytes: bytes) -> Image.Image:
+        if len(image_bytes) > MAX_SOURCE_IMAGE_BYTES:
+            raise ValueError("Az OCR képfájlja legfeljebb 64 MiB méretű lehet.")
+
         with Image.open(io.BytesIO(image_bytes)) as image:
-            prepared_image = ImageOps.exif_transpose(image).convert("RGB")
+            # A méretcsökkentés előtt is kell korlát, mert a dekódolás memóriát foglal.
+            if image.width * image.height > MAX_SOURCE_IMAGE_PIXELS:
+                raise ValueError("Az OCR képe legfeljebb 40 millió képpontot tartalmazhat.")
+
+            prepared_image = ImageOps.exif_transpose(image)
+
+            if "A" in prepared_image.getbands() or "transparency" in prepared_image.info:
+                rgba_image = prepared_image.convert("RGBA")
+                background = Image.new("RGBA", rgba_image.size, "white")
+                prepared_image = Image.alpha_composite(background, rgba_image)
+
+            prepared_image = prepared_image.convert("RGB")
             return self._shrink_large_image(prepared_image)
 
     def _shrink_large_image(self, image: Image.Image) -> Image.Image:
@@ -417,14 +475,24 @@ class OCRService:
         return buffer.getvalue()
 
     def _extract_with_rapidocr(self, variant_name: str, image_bytes: bytes) -> list[OCRCandidate]:
-        result = self._get_engine()(image_bytes)
-        texts = tuple(str(text).strip() for text in (result.txts or ()) if str(text).strip())
+        engine = self._get_engine()
+        # A RapidOCR hívásonkénti kapcsolói megmaradnak a motorban. A csak
+        # felismerést használó javító kör után mindig visszakapcsoljuk a detektort.
+        result = engine(image_bytes, use_det=True, use_cls=True, use_rec=True)
+        raw_texts = tuple(str(text).strip() for text in (result.txts or ()))
+        raw_scores = tuple(float(score) if score is not None else 0.0 for score in (result.scores or ()))
+        valid_indices = [index for index, text in enumerate(raw_texts) if text]
+        texts = tuple(raw_texts[index] for index in valid_indices)
+        scores = tuple(raw_scores[index] if index < len(raw_scores) else 0.0 for index in valid_indices)
 
         if not texts:
             return []
 
-        if result.boxes is not None and len(result.boxes) == len(texts):
-            merged_text = self._merge_lines(result.boxes, texts)
+        if result.boxes is not None and len(result.boxes) == len(raw_texts):
+            boxes = [result.boxes[index] for index in valid_indices]
+            if variant_name in OVERLAP_RECOVERY_VARIANT_NAMES:
+                boxes, texts, scores = self._recognize_overlapping_boxes(image_bytes, boxes, texts, scores, engine)
+            merged_text = self._merge_lines(boxes, texts)
         else:
             merged_text = "\n".join(texts)
 
@@ -433,8 +501,88 @@ class OCRService:
         if not merged_text:
             return []
 
-        mean_score = mean(float(score) for score in (result.scores or ()) if score is not None) if result.scores else 0.0
-        return [self._build_candidate(merged_text, 0.75 + mean_score * 0.4, "RapidOCR", variant_name)]
+        mean_score = mean(scores) if scores else 0.0
+        # A két motor pontszáma nem azonos valószínűségi skála. Egyik sem kap
+        # automatikus előnyt pusztán azért, mert közöl karakterbizonyosságot.
+        return [self._build_candidate(merged_text, 0.8 + mean_score * 0.2, "RapidOCR", variant_name)]
+
+    def _recognize_overlapping_boxes(self, image_bytes, boxes, texts, scores, engine):
+        groups = self._overlapping_box_groups(boxes)
+
+        if all(len(group) == 1 for group in groups):
+            return boxes, texts, scores
+
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            merged_boxes, merged_texts, merged_scores = [], [], []
+            recovery_count = 0
+
+            for group in groups:
+                replacement = None
+
+                if len(group) > 1 and recovery_count < MAX_OVERLAP_RECOVERY_GROUPS:
+                    points = [point for index in group for point in boxes[index]]
+                    left = max(0, math.floor(min(float(point[0]) for point in points)))
+                    top = max(0, math.floor(min(float(point[1]) for point in points)))
+                    right = min(image.width, math.ceil(max(float(point[0]) for point in points)))
+                    bottom = min(image.height, math.ceil(max(float(point[1]) for point in points)))
+
+                    if right > left and bottom > top:
+                        recovery_count += 1
+                        crop = self._image_to_png_bytes(image.crop((left, top, right, bottom)).convert("RGB"))
+                        # Az átfedő területet egyszer olvassuk újra, nem szavakat
+                        # törlünk találomra a már felismert szövegből.
+                        recovered = engine(crop, use_det=False, use_cls=False, use_rec=True)
+                        recovered_texts = tuple(str(text).strip() for text in (recovered.txts or ()) if str(text).strip())
+                        recovered_scores = tuple(float(score) for score in (recovered.scores or ()) if score is not None)
+                        recovered_score = mean(recovered_scores) if recovered_scores else 0.0
+
+                        if len(recovered_texts) == 1 and recovered_score >= max(0.75, mean(scores[index] for index in group) - 0.1):
+                            replacement = (
+                                [[left, top], [right, top], [right, bottom], [left, bottom]],
+                                recovered_texts[0], recovered_score,
+                            )
+
+                if replacement is not None:
+                    box, text, score = replacement
+                    merged_boxes.append(box)
+                    merged_texts.append(text)
+                    merged_scores.append(score)
+                else:
+                    for index in group:
+                        merged_boxes.append(boxes[index])
+                        merged_texts.append(texts[index])
+                        merged_scores.append(scores[index])
+
+        return merged_boxes, tuple(merged_texts), tuple(merged_scores)
+
+    def _overlapping_box_groups(self, boxes) -> list[list[int]]:
+        parents = list(range(len(boxes)))
+        bounds = [
+            (min(float(point[0]) for point in box), min(float(point[1]) for point in box),
+             max(float(point[0]) for point in box), max(float(point[1]) for point in box))
+            for box in boxes
+        ]
+
+        def root(index):
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        for index, (left, top, right, bottom) in enumerate(bounds):
+            for other_index in range(index + 1, len(bounds)):
+                other_left, other_top, other_right, other_bottom = bounds[other_index]
+                min_height = min(bottom - top, other_bottom - other_top)
+                vertical_overlap = min(bottom, other_bottom) - max(top, other_top)
+                horizontal_overlap = min(right, other_right) - max(left, other_left)
+
+                if min_height > 0 and vertical_overlap >= min_height * 0.7 and horizontal_overlap > max(2.0, min_height * 0.05):
+                    parents[root(other_index)] = root(index)
+
+        groups: dict[int, list[int]] = {}
+        for index in range(len(boxes)):
+            groups.setdefault(root(index), []).append(index)
+        return list(groups.values())
 
     def _extract_with_windows_ocr(self, variant_name: str, image_bytes: bytes) -> list[OCRCandidate]:
         if not self.windows_language_tags:
@@ -449,7 +597,7 @@ class OCRService:
             if not text:
                 continue
 
-            candidates.append(self._build_candidate(text, 0.98, f"Windows OCR ({language_tag})", variant_name))
+            candidates.append(self._build_candidate(text, 1.0, f"Windows OCR ({language_tag})", variant_name))
 
         return candidates
 
@@ -526,17 +674,32 @@ class OCRService:
         if not candidate_list:
             return []
 
+        engines_by_reading: dict[str, set[str]] = {}
+
+        for candidate in candidate_list:
+            key = self._reading_consensus_key(candidate.text)
+            engines_by_reading.setdefault(key, set()).add(candidate.engine_name)
+
+        # Ugyanannak a motornak tíz képszűrője nem tíz független szavazat.
+        # Az ékezetváltozatok támogatást osztanak meg, de a szöveget nem írjuk át.
+        supported_candidates = [
+            replace(candidate, score=candidate.score + min(0.24, 0.12 * (len(engines_by_reading[self._reading_consensus_key(candidate.text)]) - 1)))
+            for candidate in candidate_list
+        ]
         ranked_candidates = sorted(
-            candidate_list,
+            supported_candidates,
             key=lambda candidate: (
                 candidate.score,
-                len(candidate.text.replace(" ", "").replace("\n", "")),
+                candidate.variant_name == "eredeti",
                 candidate.engine_name.startswith("Windows OCR"),
             ),
             reverse=True,
         )
 
         return ranked_candidates
+
+    def _reading_consensus_key(self, text: str) -> str:
+        return "".join(character for character in unicodedata.normalize("NFKD", text.casefold()) if not unicodedata.combining(character))
 
     def _language_plausibility_bonus(self, text: str) -> float:
         words = self._extract_words(text)
@@ -565,15 +728,9 @@ class OCRService:
         return min(0.2, alpha_numeric_ratio * 0.2 + len(compact) * 0.003)
 
     def _noise_penalty(self, text: str) -> float:
-        penalty = 0.0
-
-        for word in self._extract_words(text):
-            lowered = word.lower()
-
-            if len(lowered) == 1 and lowered not in {"a", "i"}:
-                penalty += 0.28
-
-        return penalty
+        # A "B" játékbeli célpont, az "ő" és a don't vége nem OCR-zaj.
+        # Csak egyértelmű helyettesítő jelöléseket büntetünk.
+        return text.count("\ufffd") * 0.25 + text.count("(cid:") * 0.25
 
     def _restore_hungarian_diacritics(self, text: str) -> str:
         words = self._extract_words(text)
@@ -668,7 +825,7 @@ class OCRService:
         return sum(max(0.0, zipf_frequency(word, language_code)) for word in cleaned_words) / len(cleaned_words)
 
     def _extract_words(self, text: str) -> list[str]:
-        return [match.group(0) for match in HUNGARIAN_WORD_PATTERN.finditer(text)]
+        return [match.group(0) for match in OCR_WORD_PATTERN.finditer(text)]
 
     def _match_case(self, original: str, replacement: str) -> str:
         return replacement.upper() if original.isupper() else replacement

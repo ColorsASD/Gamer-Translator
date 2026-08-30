@@ -1,0 +1,3 @@
+Scan starting...
+Scan finished.
+Scanning C:\Saját\Asztal\MineWild - Magyar Minecraft Szerver Közösség\Projectek\Gamer Translator\dist\staging\verified\Gamer Translator.exe found no threats.

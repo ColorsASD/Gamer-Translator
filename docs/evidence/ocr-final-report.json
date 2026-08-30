@@ -1,0 +1,24 @@
+{
+  "note": "Vegleges repository-forras, monkeypatch nelkul; szintetikus Arial64 mintak.",
+  "versions": {
+    "rapidocr": "3.9.2",
+    "onnxruntime": "1.29.0",
+    "Pillow": "12.3.0",
+    "winsdk": "1.0.0b10",
+    "wordfreq": "3.1.1"
+  },
+  "samples": [
+    {
+      "source": "Hello gamer",
+      "recognized": "Hello gamer",
+      "exact_match": true,
+      "seconds": 1.985
+    },
+    {
+      "source": "Árvíztűrő tükörfúrógép",
+      "recognized": "Árvíztürö ti tükörfúrógép",
+      "exact_match": false,
+      "seconds": 3.453
+    }
+  ]
+}

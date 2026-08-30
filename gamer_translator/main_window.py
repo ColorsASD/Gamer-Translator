@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from .defaults import APP_NAME, CHATGPT_HOSTS, CHATGPT_URL, DEFAULT_RESPONSE_TIMEOUT_MS, DEFAULT_SETTINGS, WINDOW_TITLE
@@ -60,12 +60,14 @@ SUSPENDED_FRAME_INTERVAL_MS = 1200
 BACKGROUND_TASK_EVENT_INTERVAL_SECONDS = 0.04
 SCREEN_CLIP_ARM_TIMEOUT_SECONDS = 45.0
 AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS = 70000
-AUTOMATION_SCRIPT_VERSION = "2026-04-12-4"
+AUTOMATION_SCRIPT_VERSION = "2026-08-30-1"
 INTERACTION_HEARTBEAT_INTERVAL_MS = 250
 INTERACTION_STALE_RESET_SECONDS = 8.0
 RESPONSE_FOLLOWUP_IDLE_TIMEOUT_SECONDS = 20.0
 RESPONSE_FOLLOWUP_MAX_TIMEOUT_SECONDS = 120.0
 RESPONSE_FOLLOWUP_MAX_ERROR_COUNT = 5
+MAX_CLIPBOARD_IMAGE_PIXELS = 40_000_000
+MAX_CLIPBOARD_IMAGE_BYTES = 20 * 1024 * 1024
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -201,6 +203,10 @@ if sys.platform == "win32":
     HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
     user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
     user32.SendInput.restype = wintypes.UINT
+    user32.GetKeyboardLayout.argtypes = (wintypes.DWORD,)
+    user32.GetKeyboardLayout.restype = wintypes.HANDLE
+    user32.VkKeyScanExW.argtypes = (wintypes.WCHAR, wintypes.HANDLE)
+    user32.VkKeyScanExW.restype = ctypes.c_short
     user32.SetWindowsHookExW.argtypes = (ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD)
     user32.SetWindowsHookExW.restype = wintypes.HANDLE
     user32.CallNextHookEx.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
@@ -402,7 +408,7 @@ def build_character_inputs(character: str) -> list[INPUT]:
         return build_unicode_inputs(character)
 
     keyboard_layout = user32.GetKeyboardLayout(0)
-    mapping = user32.VkKeyScanExW(ord(character), keyboard_layout)
+    mapping = user32.VkKeyScanExW(character, keyboard_layout)
 
     if mapping == -1:
         return build_unicode_inputs(character)
@@ -560,6 +566,8 @@ class TranslationOverlay(QWidget):
         self.panel_layout.setSpacing(0)
 
         self.label = QLabel("")
+        # A fordítás külső adat: HTML helyett mindig szó szerinti szöveg jelenjen meg.
+        self.label.setTextFormat(Qt.TextFormat.PlainText)
         self.label.setObjectName("translationOverlayLabel")
         self.label.setWordWrap(True)
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -987,14 +995,16 @@ class QuickChatOverlay(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, *, store: SettingsStore | None = None, clipboard: Any = None,
+                 private_browser: bool = False, open_on_start: bool = True) -> None:
         super().__init__()
         self.setWindowFlags(Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMinimumSize(1080, 720)
 
-        self.store = SettingsStore()
-        self.ocr_service = OCRService()
+        self.store = store if store is not None else SettingsStore()
+        self.private_browser = private_browser
+        self.ocr_service = OCRService(self.store.root_dir / "ocr")
         self.background_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gamer_translator")
         self.current_background_future: Future[Any] | None = None
         self.settings = self.store.load_settings()
@@ -1054,7 +1064,7 @@ class MainWindow(QMainWindow):
         self._set_live_status("Indulásra kész.")
         self._layout_overlay_widgets()
 
-        self.clipboard = QGuiApplication.clipboard()
+        self.clipboard = clipboard if clipboard is not None else QGuiApplication.clipboard()
         self.last_seen_image_signature = self._current_clipboard_signature()
         self.pending_clipboard_payload: dict[str, Any] | None = None
         self.pending_clipboard_check_requested = False
@@ -1089,7 +1099,8 @@ class MainWindow(QMainWindow):
             app.applicationStateChanged.connect(self._handle_application_state_changed)
 
         QTimer.singleShot(0, self._register_hotkeys)
-        QTimer.singleShot(0, self.open_chatgpt)
+        if open_on_start:
+            QTimer.singleShot(0, self.open_chatgpt)
         QTimer.singleShot(0, self._refresh_system_keep_awake)
 
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -1166,12 +1177,15 @@ class MainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def _build_browser(self) -> None:
-        self.profile = QWebEngineProfile(APP_NAME, self)
-        self.profile.setCachePath(str(self.store.browser_dir / "cache"))
-        self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
-        self.profile.setHttpCacheMaximumSize(512 * 1024 * 1024)
-        self.profile.setPersistentStoragePath(str(self.store.browser_dir / "storage"))
-        self.profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
+        if getattr(self, "private_browser", False):
+            self.profile = QWebEngineProfile(self)
+        else:
+            self.profile = QWebEngineProfile(APP_NAME, self)
+            self.profile.setCachePath(str(self.store.browser_dir / "cache"))
+            self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
+            self.profile.setHttpCacheMaximumSize(512 * 1024 * 1024)
+            self.profile.setPersistentStoragePath(str(self.store.browser_dir / "storage"))
+            self.profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
 
         self.page = BrowserPage(self.profile, self)
         self.browser = QWebEngineView(self)
@@ -1184,8 +1198,11 @@ class MainWindow(QMainWindow):
         browser_settings = self.browser.settings()
         self._set_web_attribute(browser_settings, "JavascriptEnabled", True)
         self._set_web_attribute(browser_settings, "LocalStorageEnabled", True)
-        self._set_web_attribute(browser_settings, "JavascriptCanAccessClipboard", True)
-        self._set_web_attribute(browser_settings, "JavascriptCanPaste", True)
+        # A vágólapot a natív alkalmazás kezeli, a megnyitott weboldalak nem kapnak hozzáférést.
+        self._set_web_attribute(browser_settings, "JavascriptCanAccessClipboard", False)
+        self._set_web_attribute(browser_settings, "JavascriptCanPaste", False)
+        self._set_web_attribute(browser_settings, "LocalContentCanAccessFileUrls", False)
+        self._set_web_attribute(browser_settings, "LocalContentCanAccessRemoteUrls", False)
         self._set_web_attribute(browser_settings, "Accelerated2dCanvasEnabled", True)
         self._set_web_attribute(browser_settings, "WebGLEnabled", True)
         self._set_web_attribute(browser_settings, "ScrollAnimatorEnabled", False)
@@ -1219,6 +1236,7 @@ class MainWindow(QMainWindow):
         self.keep_chatgpt_in_background = QCheckBox("A ChatGPT maradjon háttérben, ne kapjon fókuszt")
         self.game_mode_enabled = QCheckBox("Játék mód csökkentse a háttérterhelést")
         self.page_ready_timeout_ms = self._build_spin_box(maximum=120000, step=1000)
+        self.page_ready_timeout_ms.setMinimum(1000)
 
         overlay_opacity_row = QWidget()
         overlay_opacity_layout = QHBoxLayout(overlay_opacity_row)
@@ -1254,9 +1272,13 @@ class MainWindow(QMainWindow):
         self.last_run_label.setWordWrap(True)
         self.current_url_label = QLabel("")
         self.current_url_label.setWordWrap(True)
+        self.current_url_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.current_url_label.setContentsMargins(18, 4, 18, 4)
         self.top_status_label = QLabel("Indulásra kész.")
         self.top_status_label.setObjectName("topStatusLabel")
         self.top_status_label.setWordWrap(False)
+        for label in (self.status_label, self.last_run_label, self.top_status_label):
+            label.setTextFormat(Qt.TextFormat.PlainText)
 
         self.menu_button = QPushButton("Beállítások")
         self.menu_button.clicked.connect(self.toggle_drawer)
@@ -1325,6 +1347,9 @@ class MainWindow(QMainWindow):
         top_bar_layout.addWidget(self.menu_button)
         top_bar_layout.addWidget(self.send_prompt_now_button)
         root_layout.addWidget(self.top_bar)
+        # A böngésző eredete mindig látható; a bejelentkezési tokeneket nem jelenítjük meg.
+        root_layout.addWidget(self.current_url_label)
+        self.browser.urlChanged.connect(self._update_browser_origin_label)
 
         self.content_surface = QFrame()
         self.content_surface.setObjectName("contentSurface")
@@ -2004,8 +2029,9 @@ class MainWindow(QMainWindow):
         ]
 
         if arguments:
-            rendered_arguments = ", ".join(self._powershell_literal(argument) for argument in arguments)
-            script_lines.append(f"$StartProcessArgs.ArgumentList = @({rendered_arguments})")
+            # A Start-Process összefűzi a tömböt; a szóközös útvonalakat előre idézni kell.
+            rendered_arguments = self._powershell_literal(subprocess.list2cmdline(arguments))
+            script_lines.append(f"$StartProcessArgs.ArgumentList = {rendered_arguments}")
 
         script_lines.extend(
             [
@@ -2067,13 +2093,13 @@ class MainWindow(QMainWindow):
     def _handle_load_started(self) -> None:
         self.page_loading = True
         self.automation_ready = False
-        self.current_url_label.setText(self.browser.url().toString())
+        self._update_browser_origin_label(self.browser.url())
         self._set_live_status("A ChatGPT oldal betöltése folyamatban.")
         QTimer.singleShot(0, self._sync_browser_runtime_state)
 
     def _handle_load_finished(self, ok: bool) -> None:
         self.page_loading = False
-        self.current_url_label.setText(self.browser.url().toString())
+        self._update_browser_origin_label(self.browser.url())
 
         if not ok:
             self._set_live_status("A böngészőoldal nem töltődött be rendesen.")
@@ -2087,6 +2113,15 @@ class MainWindow(QMainWindow):
             self._set_live_status(str(error))
         finally:
             QTimer.singleShot(0, self._sync_browser_runtime_state)
+
+    def _update_browser_origin_label(self, url: QUrl) -> None:
+        origin_url = QUrl()
+        origin_url.setScheme(url.scheme())
+        origin_url.setHost(url.host())
+        origin_url.setPort(url.port())
+        origin = origin_url.toString(QUrl.ComponentFormattingOption.FullyEncoded)
+        prefix = "ChatGPT" if self._is_chatgpt_url(url.toString()) else "Külső oldal – automatizálás kikapcsolva"
+        self.current_url_label.setText(f"{prefix}: {origin}")
 
     def save_settings(self) -> None:
         previous_settings = self.settings
@@ -2133,6 +2168,9 @@ class MainWindow(QMainWindow):
         self.open_chatgpt(show_error_dialog=True)
 
     def open_chatgpt(self, *, show_error_dialog: bool = False) -> None:
+        if self.browser_interaction_active or self.clipboard_translation_in_progress:
+            self._set_live_status("Már fut egy másik ChatGPT művelet, várd meg amíg befejeződik.")
+            return
         self.settings = self._read_settings_from_form()
         self._begin_browser_interaction()
 
@@ -2150,6 +2188,9 @@ class MainWindow(QMainWindow):
             self._end_browser_interaction()
 
     def send_prompt_now(self) -> None:
+        if self.browser_interaction_active or self.clipboard_translation_in_progress:
+            self._set_live_status("Már fut egy másik ChatGPT művelet, várd meg amíg befejeződik.")
+            return
         self.settings = self._read_settings_from_form()
         self._set_live_status("Prompt küldése folyamatban.")
         self._begin_browser_interaction()
@@ -2194,6 +2235,11 @@ class MainWindow(QMainWindow):
 
     def _poll_clipboard(self) -> None:
         if self.clipboard_translation_in_progress:
+            return
+
+        if self.browser_interaction_active:
+            # Az eseményhurok újra beléphet ide egy folyamatban lévő küldés közben.
+            self.clipboard_debounce_timer.start()
             return
 
         payload = self._read_clipboard_image_payload()
@@ -2456,10 +2502,10 @@ class MainWindow(QMainWindow):
                 f"""
                     (() => {{
                       if ({str(stop_remote).lower()} && typeof window.__gamerTranslatorStopResponseFollowUp === "function") {{
-                        window.__gamerTranslatorStopResponseFollowUp("{current_progress_call_id}", {{ emitDone: false }});
+                        window.__gamerTranslatorStopResponseFollowUp({json.dumps(current_progress_call_id)}, {{ emitDone: false }});
                       }}
                       const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
-                      delete progressBucket["{current_progress_call_id}"];
+                      delete progressBucket[{json.dumps(current_progress_call_id)}];
                       return true;
                     }})()
                 """,
@@ -2496,7 +2542,7 @@ class MainWindow(QMainWindow):
                 f"""
                     (() => {{
                       const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
-                      return progressBucket["{progress_call_id}"] ?? null;
+                      return progressBucket[{json.dumps(progress_call_id)}] ?? null;
                     }})()
                 """,
                 timeout_ms=3000,
@@ -2514,10 +2560,11 @@ class MainWindow(QMainWindow):
 
         try:
             progress = json.loads(progress_json)
-        except Exception:
+            if not isinstance(progress, dict):
+                return
+            progress_sequence = int(progress.get("seq") or 0)
+        except (ValueError, TypeError, OverflowError):
             return
-
-        progress_sequence = int(progress.get("seq") or 0)
 
         if progress_sequence <= self.response_followup_last_sequence:
             return
@@ -3084,8 +3131,13 @@ class MainWindow(QMainWindow):
             self._set_live_status("Nincs memóriában eltárolt fordítás a begépeléshez.")
             return
 
-        if self._wait_for_modifier_release():
-            self._type_cached_text_via_hotkey()
+        # A várakozás alatt is válthat ablakot a felhasználó; a cél már a
+        # gyorsbillentyű aktiválásakor rögzített, nem a felengedés után.
+        target_window = user32.GetForegroundWindow() if sys.platform == "win32" else None
+        if not target_window:
+            self._set_live_status("A begépeléshez nem azonosítható aktív ablak.")
+            return
+        if self._wait_for_modifier_release() and self._type_cached_text_via_hotkey(target_window=target_window):
             self._set_live_status(f"A mentett fordítás begépelve: {self.settings.type_out_hotkey}")
 
     def _trigger_screen_clip_hotkey(self) -> None:
@@ -3140,21 +3192,38 @@ class MainWindow(QMainWindow):
             QGuiApplication.processEvents()
             time.sleep(0.02)
 
-        return True
+        return False
 
-    def _type_cached_text_via_hotkey(self) -> None:
+    def _type_cached_text_via_hotkey(self, *, target_window: int | None = None) -> bool:
         if sys.platform != "win32" or not self.last_translated_text:
-            return
+            return False
+
+        if target_window is None:
+            target_window = user32.GetForegroundWindow()
 
         for character in self.last_translated_text:
+            if not target_window or user32.GetForegroundWindow() != target_window:
+                self._set_live_status("A begépelés megszakadt, mert megváltozott az aktív ablak.")
+                return False
             inputs = build_character_inputs(character)
 
             if not inputs:
                 continue
 
             input_array = (INPUT * len(inputs))(*inputs)
-            user32.SendInput(len(inputs), input_array, ctypes.sizeof(INPUT))
+            inserted_count = user32.SendInput(len(inputs), input_array, ctypes.sizeof(INPUT))
+            if inserted_count != len(inputs):
+                # Részleges bevitel után a szintetikus Shift/Alt/billentyű sem maradhat lenyomva.
+                if inserted_count > 0:
+                    releases = [entry for entry in inputs if entry.ki.dwFlags & KEYEVENTF_KEYUP]
+                    if releases:
+                        release_array = (INPUT * len(releases))(*releases)
+                        user32.SendInput(len(releases), release_array, ctypes.sizeof(INPUT))
+                self._set_live_status("A Windows nem engedélyezte a szöveg teljes begépelését.")
+                return False
             time.sleep(0.012)
+
+        return True
 
     def _apply_settings_to_form(self, settings: AppSettings) -> None:
         self.monitoring_enabled.setChecked(settings.monitoring_enabled)
@@ -3466,6 +3535,20 @@ class MainWindow(QMainWindow):
             raise RuntimeError("A ChatGPT oldal nem töltődött be időben.")
 
     def _run_javascript(self, script: str, *, timeout_ms: int) -> Any:
+        if not self._is_chatgpt_url(self.browser.url().toString()):
+            raise RuntimeError("Az automatizálás csak a ChatGPT HTTPS oldalán használható.")
+
+        # A második ellenőrzés a betöltés közbeni címváltást is kezeli. Az elkülönített
+        # világ megakadályozza, hogy az oldal felülírja a natív alkalmazás JS függvényeit.
+        allowed_hosts = json.dumps(list(CHATGPT_HOSTS))
+        guarded_script = f"""
+            if (window.top === window && location.protocol === 'https:' &&
+                {allowed_hosts}.includes(location.hostname) &&
+                (!location.port || location.port === '443') &&
+                !location.username && !location.password) {{
+                {script}
+            }} else {{ null; }}
+        """
         result_box: dict[str, Any] = {"done": False}
         loop = QEventLoop()
         timer = QTimer()
@@ -3494,13 +3577,19 @@ class MainWindow(QMainWindow):
         heartbeat_timer.timeout.connect(touch_interaction_heartbeat)
         timer.start(timeout_ms)
         heartbeat_timer.start()
-        self.browser.page().runJavaScript(script, handle_result)
-        loop.exec()
+        self.browser.page().runJavaScript(
+            guarded_script, QWebEngineScript.ScriptWorldId.ApplicationWorld, handle_result
+        )
+        if not result_box["done"]:
+            loop.exec()
         timer.stop()
         heartbeat_timer.stop()
 
         if not result_box["done"]:
             raise RuntimeError("A JavaScript futtatása időtúllépéssel megszakadt.")
+
+        if not self._is_chatgpt_url(self.browser.url().toString()):
+            raise RuntimeError("Az oldal címe megváltozott, az automatizálás megszakadt.")
 
         return result_box.get("value")
 
@@ -3518,6 +3607,10 @@ class MainWindow(QMainWindow):
         if image.isNull():
             return None
 
+        if image.width() * image.height() > MAX_CLIPBOARD_IMAGE_PIXELS:
+            self._set_live_status("A vágólap képe túl nagy (legfeljebb 40 millió képpont lehet).")
+            return None
+
         buffer = QBuffer()
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
 
@@ -3526,6 +3619,9 @@ class MainWindow(QMainWindow):
 
         raw_bytes = bytes(buffer.data())
         if not raw_bytes:
+            return None
+        if len(raw_bytes) > MAX_CLIPBOARD_IMAGE_BYTES:
+            self._set_live_status("A vágólap PNG képe túl nagy (legfeljebb 20 MiB lehet).")
             return None
 
         signature = hashlib.sha256(raw_bytes).hexdigest()
@@ -3570,8 +3666,17 @@ class MainWindow(QMainWindow):
         if not url:
             return False
 
-        host = urlparse(url).hostname or ""
-        return any(host == allowed_host for allowed_host in CHATGPT_HOSTS)
+        try:
+            parsed = urlparse(url)
+            return (
+                parsed.scheme == "https"
+                and parsed.hostname in CHATGPT_HOSTS
+                and parsed.port in (None, 443)
+                and parsed.username is None
+                and parsed.password is None
+            )
+        except ValueError:
+            return False
 
     def _set_web_attribute(self, settings: QWebEngineSettings, attribute_name: str, value: bool) -> None:
         attribute = getattr(QWebEngineSettings.WebAttribute, attribute_name, None)

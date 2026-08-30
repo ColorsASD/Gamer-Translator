@@ -1,0 +1,21 @@
+✔ Az automatizálás csak az engedélyezett HTTPS fődokumentumokban indul (7.6862ms)
+✔ Navigáció után a megmaradt kézbesítő sem dolgozik idegen eredeten (0.7794ms)
+✔ Hibás payload visszautasítása nem indít DOM-műveletet (1.2299ms)
+✔ Csak a teljes, normalizált prompt igazolható vissza (2.1422ms)
+✔ Részlegesen visszaállított prompt esetén a nyilvános küldés sem küld semmit (1.4253ms)
+✔ Küldés nélküli beillesztés nem vár idegen válaszra és nem értelmez HTML-t (1.0665ms)
+✔ Párhuzamos kézbesítés nem írhatja felül az aktív promptot (0.913ms)
+✔ Kép adatURL MIME-, base64- és méretellenőrzése (26.2224ms)
+✔ A thinking szót tartalmazó fordítás nem veszik el állapotjelzésként (1.0867ms)
+✔ Inline formázás és kód nem töri szét a fordítás szavait (1.1882ms)
+✔ A kézi küldés helyreállítása DOM-változás nélkül is egyszer elindul (2.0152ms)
+✔ Az automatizálás saját eseménye nem élesíti a kézi helyreállítást (1.5497ms)
+✔ A megfigyelő leállítása törli a függő helyreállítás időzítőjét (1.1343ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 132.555

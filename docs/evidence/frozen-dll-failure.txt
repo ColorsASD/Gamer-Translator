@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "main.py", line 84, in <module>
+    from PySide6.QtCore import QLockFile, QObject, Signal
+ImportError: DLL load failed while importing QtCore: A megadott eljárás nem található.

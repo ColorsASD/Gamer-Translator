@@ -1,0 +1,25 @@
+{
+  "date": "2026-08-30",
+  "runtime": "Python 3.13.15, PySide6 6.11.2; source main.py --staging",
+  "url": "https://chatgpt.com/",
+  "authentication": "logged out; temporary off-the-record profile",
+  "method": "Windows Computer Use; application manual prompt button; read-only UI verification",
+  "prompt": "Gamer Translator kompatibilitási teszt. Fordítsd magyarra ezt az angol mondatot, és csak a fordítást add vissza: Hello gamer!",
+  "response": "Szia, gamer!",
+  "applicationStatus": "A prompt elküldve.",
+  "applicationStatusTimestamp": "2026-08-30T17:06:04+00:00",
+  "checks": {
+    "real_page_loaded": true,
+    "visible_https_origin": true,
+    "native_manual_prompt_submitted": true,
+    "user_message_observed_in_conversation": true,
+    "assistant_response_observed_in_conversation": true
+  },
+  "personal_data_sent": false,
+  "limits": [
+    "One logged-out text sample only, not authenticated feature coverage.",
+    "Source execution, not the final frozen executable.",
+    "Further live submissions stopped after the Computer Use safety gate required explicit approval.",
+    "No live image upload, clipboard copying, authentication, CAPTCHA bypass, or OpenAI server deployment."
+  ]
+}

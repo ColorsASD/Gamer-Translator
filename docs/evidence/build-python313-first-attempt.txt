@@ -1,0 +1,136 @@
+422 INFO: PyInstaller: 6.22.2, contrib hooks: 2026.7
+422 INFO: Python: 3.13.15
+455 INFO: Platform: Windows-11-10.0.26200-SP0
+455 INFO: Python environment: C:\Saj�t\Asztal\MineWild - Magyar Minecraft Szerver K�z�ss�g\Projectek\Gamer Translator\.venv313
+456 INFO: wrote C:\Saj�t\Asztal\MineWild - Magyar Minecraft Szerver K�z�ss�g\Projectek\Gamer Translator\dist\staging\.build-d651017bc787433ca519670316e807f1\spec\Gamer Translator.spec
+471 INFO: Removing temporary files and cleaning cache in C:\Users\juher\AppData\Local\pyinstaller
+638 WARNING: Failed to collect submodules for 'rapidocr.inference_engine.tensorrt' because importing 'rapidocr.inference_engine.tensorrt' raised: ModuleNotFoundError: No module named 'tensorrt'
+6793 INFO: Module search paths (PYTHONPATH):
+['C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver '
+ 'K�z�ss�g\\Projectek\\Gamer Translator',
+ 'C:\\Users\\juher\\AppData\\Local\\Programs\\Python\\GamerTranslator-Python31315\\python313.zip',
+ 'C:\\Users\\juher\\AppData\\Local\\Programs\\Python\\GamerTranslator-Python31315\\DLLs',
+ 'C:\\Users\\juher\\AppData\\Local\\Programs\\Python\\GamerTranslator-Python31315\\Lib',
+ 'C:\\Users\\juher\\AppData\\Local\\Programs\\Python\\GamerTranslator-Python31315',
+ 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver '
+ 'K�z�ss�g\\Projectek\\Gamer Translator\\.venv313',
+ 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver '
+ 'K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages',
+ 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver '
+ 'K�z�ss�g\\Projectek\\Gamer Translator']
+7515 INFO: Appending 'binaries' from .spec
+7515 INFO: Appending 'datas' from .spec
+7560 INFO: checking Analysis
+7560 INFO: Building Analysis because Analysis-00.toc is non existent
+7560 INFO: Looking for Python shared library...
+7560 INFO: Using Python shared library: C:\Users\juher\AppData\Local\Programs\Python\GamerTranslator-Python31315\python313.dll
+7560 INFO: Running Analysis Analysis-00.toc
+7560 INFO: Target bytecode optimization level: 0
+7560 INFO: Initializing module dependency graph...
+7577 INFO: Initializing module graph hook caches...
+7605 INFO: Analyzing modules for base_library.zip ...
+9690 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+10406 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+11876 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+12948 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+14416 INFO: Caching module dependency graph...
+14458 INFO: Analyzing C:\Saj�t\Asztal\MineWild - Magyar Minecraft Szerver K�z�ss�g\Projectek\Gamer Translator\main.py
+14487 INFO: Processing standard module hook 'hook-PySide6.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+14791 INFO: Processing standard module hook 'hook-shiboken6.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+14997 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+17226 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+20668 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+25343 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+52995 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+53039 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+53059 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+53215 INFO: Processing standard module hook 'hook-PySide6.QtWebEngineCore.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+54343 INFO: Processing standard module hook 'hook-PySide6.QtWebChannel.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+55128 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+55310 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+55803 INFO: Processing standard module hook 'hook-PySide6.QtWebEngineWidgets.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+56423 INFO: Processing standard module hook 'hook-PySide6.QtPrintSupport.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+57600 INFO: Processing standard module hook 'hook-PIL.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+57713 INFO: Processing standard module hook 'hook-PIL.Image.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+58280 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+58685 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+58686 INFO: SetuptoolsInfo: initializing cached setuptools info...
+59988 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+61276 INFO: Processing standard module hook 'hook-webbrowser.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+62806 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+63282 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+63505 INFO: Processing standard module hook 'hook-PIL.ImageFilter.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+63803 INFO: Processing standard module hook 'hook-cv2.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+65351 INFO: Processing standard module hook 'hook-onnxruntime.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+65464 INFO: Processing pre-safe-import-module hook 'hook-tensorflow.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\pre_safe_import_module'
+65487 INFO: Processing standard module hook 'hook-urllib3.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+65601 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+65601 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
+65609 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+65624 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+65657 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+65658 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+65671 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+65672 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+65847 INFO: Processing standard module hook 'hook-_osx_support.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+65865 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+66156 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+66158 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+66799 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+66800 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+67333 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+67334 INFO: Setuptools: 'wheel' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.wheel'!
+67791 INFO: Processing standard module hook 'hook-certifi.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+C:\Saj�t\Asztal\MineWild - Magyar Minecraft Szerver K�z�ss�g\Projectek\Gamer Translator\.venv313\Lib\site-packages\rapidocr\inference_engine\pytorch\networks\heads\multiheadAttention.py:14: SyntaxWarning: invalid escape sequence '\d'
+  \text{MultiHead}(Q, K, V) = \text{Concat}(head_1,\dots,head_h)W^O
+68577 INFO: Processing standard module hook 'hook-shapely.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+68830 INFO: Processing standard module hook 'hook-langcodes.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+69038 INFO: Processing standard module hook 'hook-regex.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+69282 INFO: Processing standard module hook 'hook-wcwidth.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+69840 INFO: Analyzing hidden import 'rapidocr._version'
+69842 INFO: Analyzing hidden import 'winrt.runtime.interop'
+69843 INFO: Analyzing hidden import 'winrt.system.hresult'
+69845 INFO: Processing module hooks (post-graph stage)...
+70192 INFO: Processing standard module hook 'hook-PIL.SpiderImagePlugin.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+70308 INFO: Processing standard module hook 'hook-PySide6.QtPositioning.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+71490 INFO: Processing standard module hook 'hook-PySide6.QtQuick.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+74233 INFO: Processing standard module hook 'hook-PySide6.QtOpenGL.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+78346 INFO: Processing standard module hook 'hook-PySide6.QtQml.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+81933 WARNING: QtLibraryInfo(PySide6): QML plugin binary 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PySide6\\qml\\Qt\\labs\\assetdownloader\\qmlassetdownloaderprivateplugin.dll' does not exist!
+105803 INFO: Processing standard module hook 'hook-PySide6.QtQuickWidgets.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+107235 INFO: Performing binary vs. data reclassification (3052 entries)
+124503 INFO: Looking for ctypes DLLs
+124626 INFO: Analyzing run-time hooks ...
+124630 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+124633 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+124636 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+124638 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+124639 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+124641 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+124644 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+124720 INFO: Creating base_library.zip...
+124742 INFO: Looking for dynamic libraries
+127720 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\shiboken6', 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\numpy.libs', 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\cv2\\../../x64/vc17/bin', 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\shapely.libs']
+127720 INFO: Extra DLL search directories (PATH): ['C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\cv2\\../../x64/vc17/bin', 'C:\\Saj�t\\Asztal\\MineWild - Magyar Minecraft Szerver K�z�ss�g\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PySide6']
+136195 INFO: Warnings written to C:\Saj�t\Asztal\MineWild - Magyar Minecraft Szerver K�z�ss�g\Projectek\Gamer Translator\dist\staging\.build-d651017bc787433ca519670316e807f1\work\Gamer Translator\warn-Gamer Translator.txt
+136291 INFO: Graph cross-reference written to C:\Saj�t\Asztal\MineWild - Magyar Minecraft Szerver K�z�ss�g\Projectek\Gamer Translator\dist\staging\.build-d651017bc787433ca519670316e807f1\work\Gamer Translator\xref-Gamer Translator.html
+136429 INFO: checking PYZ
+136430 INFO: Building PYZ because PYZ-00.toc is non existent
+136430 INFO: Building PYZ (ZlibArchive) C:\Saj�t\Asztal\MineWild - Magyar Minecraft Szerver K�z�ss�g\Projectek\Gamer Translator\dist\staging\.build-d651017bc787433ca519670316e807f1\work\Gamer Translator\PYZ-00.pyz
+137229 INFO: Building PYZ (ZlibArchive) C:\Saj�t\Asztal\MineWild - Magyar Minecraft Szerver K�z�ss�g\Projectek\Gamer Translator\dist\staging\.build-d651017bc787433ca519670316e807f1\work\Gamer Translator\PYZ-00.pyz completed successfully.
+137321 INFO: checking PKG
+137322 INFO: Building PKG because PKG-00.toc is non existent
+137322 INFO: Building PKG (CArchive) Gamer Translator.pkg
+216393 INFO: Building PKG (CArchive) Gamer Translator.pkg completed successfully.
+216482 INFO: Bootloader C:\Saj�t\Asztal\MineWild - Magyar Minecraft Szerver K�z�ss�g\Projectek\Gamer Translator\.venv313\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+216482 INFO: checking EXE
+216482 INFO: Building EXE because EXE-00.toc is non existent
+216482 INFO: Building EXE from EXE-00.toc
+216483 INFO: Copying bootloader EXE to C:\Saj�t\Asztal\MineWild - Magyar Minecraft Szerver K�z�ss�g\Projectek\Gamer Translator\dist\staging\.build-d651017bc787433ca519670316e807f1\dist\Gamer Translator.exe
+216577 INFO: Copying icon to EXE
+216614 INFO: Copying 0 resources to EXE
+216614 INFO: Embedding manifest in EXE
+216651 INFO: Appending PKG archive to EXE
+216926 INFO: Fixing EXE headers
+218531 INFO: Building EXE from EXE-00.toc completed successfully.
+218621 INFO: Build complete! The results are available in: C:\Saj�t\Asztal\MineWild - Magyar Minecraft Szerver K�z�ss�g\Projectek\Gamer Translator\dist\staging\.build-d651017bc787433ca519670316e807f1\dist

@@ -1,5 +1,17 @@
 (() => {
-  const AUTOMATION_SCRIPT_VERSION = "2026-04-12-4";
+  const AUTOMATION_SCRIPT_VERSION = "2026-08-30-1";
+  const TRUSTED_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
+  const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+  let deliveryInProgress = false;
+
+  function isTrustedPage() {
+    return window.top === window && TRUSTED_ORIGINS.has(window.location.origin);
+  }
+
+  // A vágólap tartalma csak a kijelölt HTTPS eredet fődokumentumába kerülhet.
+  if (!isTrustedPage()) {
+    return;
+  }
   const FRAME_INTERVAL_MS = 20;
   const SELF_HEAL_CHECK_LIMIT = 5;
   const SUBMISSION_RETRY_GUARD_MS = 2200;
@@ -12,7 +24,6 @@
     "ASIDE",
     "BLOCKQUOTE",
     "BR",
-    "CODE",
     "DIV",
     "DL",
     "DT",
@@ -460,6 +471,35 @@
   }
 
   window.__gamerTranslatorDeliver = async function deliverPromptToChatGpt(payload) {
+    if (!isTrustedPage()) {
+      return { ok: false, error: "Az oldal eredete nem engedélyezett." };
+    }
+
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return { ok: false, error: "A küldési adatok formátuma hibás." };
+    }
+
+    const initializesWatcher = payload.initializeComposerAutoRecovery === true;
+
+    // Két átfedő küldés összekeverhetné a promptot, a képet és a választ.
+    if (!initializesWatcher && deliveryInProgress) {
+      return { ok: false, error: "Már folyamatban van egy küldés." };
+    }
+
+    if ((payload.prompt != null && typeof payload.prompt !== "string")
+      || (payload.imageDataUrl != null && typeof payload.imageDataUrl !== "string")) {
+      return { ok: false, error: "A prompt és a kép csak szöveges adat lehet." };
+    }
+
+    payload = {
+      ...payload,
+      initializeComposerAutoRecovery: initializesWatcher,
+      autoSubmit: payload.autoSubmit === true,
+      copyResponseToClipboard: payload.copyResponseToClipboard === true && payload.autoSubmit === true,
+      pageReadyTimeoutMs: Math.min(120000, Math.max(20, Number(payload.pageReadyTimeoutMs) || 25000)),
+      responseTimeoutMs: Math.min(600000, Math.max(0, Number(payload.responseTimeoutMs) || 0))
+    };
+
     const composerAutoRecovery = ensureComposerAutoRecoveryWatcher();
     const reportProgress = (progress) => {
       writeProgressEntry(payload.progressCallId, progress);
@@ -467,6 +507,7 @@
     const shouldSuspendComposerAutoRecovery = !payload.initializeComposerAutoRecovery;
 
     if (shouldSuspendComposerAutoRecovery) {
+      deliveryInProgress = true;
       composerAutoRecovery.suspendedCount += 1;
     }
 
@@ -546,6 +587,7 @@
       };
     } finally {
       if (shouldSuspendComposerAutoRecovery) {
+        deliveryInProgress = false;
         composerAutoRecovery.suspendedCount = Math.max(0, composerAutoRecovery.suspendedCount - 1);
         composerAutoRecovery.requestEvaluation();
       }
@@ -681,13 +723,29 @@
     }
 
     function dataUrlToFile(dataUrl, filename, mimeType) {
-      const [header, encoded] = String(dataUrl || "").split(",", 2);
+      const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/i.exec(String(dataUrl || ""));
 
-      if (!header || !encoded) {
+      if (!match) {
         throw new Error("A kép adatURL formátuma hibás.");
       }
 
+      const [, declaredMimeType, encoded] = match;
+
+      if (mimeType && String(mimeType).toLowerCase() !== declaredMimeType.toLowerCase()) {
+        throw new Error("A kép MIME-típusa nem egyezik az adatURL típusával.");
+      }
+
+      // A korlát dekódolás előtt is érvényesül, így a base64 nem foglalhat korlátlan memóriát.
+      if (encoded.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) {
+        throw new Error("A kép mérete legfeljebb 20 MiB lehet.");
+      }
+
       const binary = atob(encoded);
+
+      if (!binary.length || binary.length > MAX_IMAGE_BYTES) {
+        throw new Error("A kép mérete legfeljebb 20 MiB lehet.");
+      }
+
       const bytes = new Uint8Array(binary.length);
 
       for (let index = 0; index < binary.length; index += 1) {
@@ -695,7 +753,7 @@
       }
 
       return new File([bytes], filename, {
-        type: mimeType || "image/png",
+        type: declaredMimeType.toLowerCase(),
         lastModified: Date.now()
       });
     }
@@ -707,8 +765,14 @@
       const preparedComposer = await waitFor(() => {
         const candidate = findComposer() || liveComposer;
         const promptReady = Boolean(normalizePromptStructure(readComposerText(candidate)));
+        const sendButton = findSendButton(candidate);
 
-        if (!isComposerReadyForSubmit(candidate) || !promptReady) {
+        if (!isComposerReadyForSubmit(candidate) || !promptReady
+          || !(sendButton instanceof HTMLButtonElement) || isGenerationInProgress()) {
+          return null;
+        }
+
+        if (payload.prompt && normalizePromptStructure(readComposerText(candidate)) !== normalizePromptStructure(payload.prompt)) {
           return null;
         }
 
@@ -939,6 +1003,14 @@
         return String(element.value || "");
       }
 
+      const paragraphs = Array.from(element.childNodes);
+
+      if (paragraphs.length > 0 && paragraphs.every((node) => node instanceof HTMLElement && node.tagName === "P")) {
+        // A beillesztett prompt üres sorai önálló bekezdések; ezeket a válaszok
+        // általános DOM-normalizálása nem vonhatja össze az ellenőrzés előtt.
+        return paragraphs.map((paragraph) => normalizeStructuredDomText(readStructuredDomText(paragraph))).join("\n");
+      }
+
       const structuredText = normalizeStructuredDomText(readStructuredDomText(element));
 
       if (structuredText) {
@@ -961,21 +1033,21 @@
         const liveComposer = findComposer() || composer;
         const currentPrompt = normalizePromptStructure(readComposerText(liveComposer));
 
-        if (
-          currentPrompt
-          && (
-            currentPrompt === expectedPrompt
-            || currentPrompt.includes(expectedPrompt)
-            || expectedPrompt.includes(currentPrompt)
-          )
-        ) {
+        if (currentPrompt === expectedPrompt) {
           return liveComposer;
         }
 
         await waitForNextStateTurn(timeoutMs - (Date.now() - startedAt));
       }
 
-      return findComposer() || composer;
+      const finalComposer = findComposer() || composer;
+
+      if (normalizePromptStructure(readComposerText(finalComposer)) === expectedPrompt) {
+        return finalComposer;
+      }
+
+      // Részleges vagy visszaállított bevitelt nem szabad sikeresnek tekinteni és elküldeni.
+      throw new Error("A teljes prompt beillesztése nem sikerült; a tartalom nem lett elküldve.");
     }
 
     function setContentEditablePrompt(element, prompt) {
@@ -1878,7 +1950,7 @@
     }
 
     function isTransientAssistantText(text) {
-      const normalized = normalizeWhitespace(text).toLowerCase();
+      const normalized = normalizeWhitespace(text).toLowerCase().replace(/[.\u2026]+$/, "").trim();
 
       if (!normalized) {
         return true;
@@ -1894,7 +1966,7 @@
         "analysis in progress",
         "thinking",
         "processing image"
-      ].some((needle) => normalized.includes(needle));
+      ].includes(normalized);
     }
 
     function isAssistantMessageBusy(element) {
@@ -2166,19 +2238,8 @@
           return;
         }
 
-        if (parts.length === 0) {
-          parts.push(normalizedText);
-          return;
-        }
-
-        const previousPart = parts[parts.length - 1];
-
-        if (previousPart === "\n" || /^[\s(/{[]*$/.test(previousPart) || /^[,.;:!?%)\]}]/.test(normalizedText)) {
-          parts.push(normalizedText);
-          return;
-        }
-
-        parts.push(" ", normalizedText);
+        // Az inline formázás nem szúrhat szóközt egy szó vagy parancs közepébe.
+        parts.push(normalizedText);
       };
 
       const appendBreak = () => {
@@ -2599,14 +2660,25 @@
         unsubscribe: null,
         destroy: null,
         requestEvaluation: null,
+        retryTimeoutId: null,
       };
 
       const resetWatcherState = () => {
         watcherState.armedPayloadKey = "";
         watcherState.lastAttemptKey = "";
+
+        if (watcherState.retryTimeoutId !== null) {
+          window.clearTimeout(watcherState.retryTimeoutId);
+          watcherState.retryTimeoutId = null;
+        }
       };
 
       const armComposerAutoRecovery = (composerCandidate) => {
+        // Az automatizálás saját küldési eseményei nem indíthatnak új háttérküldést.
+        if (watcherState.destroyed || watcherState.busy || watcherState.suspendedCount > 0) {
+          return;
+        }
+
         const composer = findComposer() || composerCandidate;
 
         if (!(composer instanceof HTMLElement)) {
@@ -2623,6 +2695,16 @@
         watcherState.armedPayloadKey = payloadKey;
         watcherState.lastAttemptKey = "";
         armSubmissionRetryGuard(composer, submissionState);
+
+        if (watcherState.retryTimeoutId !== null) {
+          window.clearTimeout(watcherState.retryTimeoutId);
+        }
+
+        // A lejárat DOM-változás nélkül is felébreszti az egyszeri helyreállítást.
+        watcherState.retryTimeoutId = window.setTimeout(() => {
+          watcherState.retryTimeoutId = null;
+          watcherState.requestEvaluation();
+        }, getSubmissionRetryGuardRemainingMs(composer, submissionState) + FRAME_INTERVAL_MS);
         watcherState.requestEvaluation();
       };
 
@@ -2809,6 +2891,7 @@
 
         watcherState.destroyed = true;
         watcherState.suspendedCount = Number.MAX_SAFE_INTEGER;
+        resetWatcherState();
 
         if (typeof watcherState.unsubscribe === "function") {
           watcherState.unsubscribe();

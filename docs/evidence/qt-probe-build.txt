@@ -1,0 +1,78 @@
+295 INFO: PyInstaller: 6.22.2, contrib hooks: 2026.7
+295 INFO: Python: 3.13.15
+331 INFO: Platform: Windows-11-10.0.26200-SP0
+331 INFO: Python environment: C:\Saját\Asztal\MineWild - Magyar Minecraft Szerver Közösség\Projectek\Gamer Translator\.venv313
+333 INFO: wrote dist\staging\dll-probe\spec\QtCoreProbe.spec
+338 INFO: Removing temporary files and cleaning cache in C:\Users\juher\AppData\Local\pyinstaller
+349 INFO: Module search paths (PYTHONPATH):
+['C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver '
+ 'Közösség\\Projectek\\Gamer Translator',
+ 'C:\\Users\\juher\\AppData\\Local\\Programs\\Python\\GamerTranslator-Python31315\\python313.zip',
+ 'C:\\Users\\juher\\AppData\\Local\\Programs\\Python\\GamerTranslator-Python31315\\DLLs',
+ 'C:\\Users\\juher\\AppData\\Local\\Programs\\Python\\GamerTranslator-Python31315\\Lib',
+ 'C:\\Users\\juher\\AppData\\Local\\Programs\\Python\\GamerTranslator-Python31315',
+ 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver '
+ 'Közösség\\Projectek\\Gamer Translator\\.venv313',
+ 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver '
+ 'Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages',
+ 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver '
+ 'Közösség\\Projectek\\Gamer Translator\\tools']
+1144 INFO: checking Analysis
+1144 INFO: Building Analysis because Analysis-00.toc is non existent
+1144 INFO: Looking for Python shared library...
+1144 INFO: Using Python shared library: C:\Users\juher\AppData\Local\Programs\Python\GamerTranslator-Python31315\python313.dll
+1144 INFO: Running Analysis Analysis-00.toc
+1144 INFO: Target bytecode optimization level: 0
+1144 INFO: Initializing module dependency graph...
+1149 INFO: Initializing module graph hook caches...
+1170 INFO: Analyzing modules for base_library.zip ...
+3605 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+4492 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+5955 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+6954 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+7549 INFO: Caching module dependency graph...
+7599 INFO: Analyzing C:\Saját\Asztal\MineWild - Magyar Minecraft Szerver Közösség\Projectek\Gamer Translator\tools\qt_runtime_probe.py
+7642 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+7650 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+7662 INFO: Processing standard module hook 'hook-PySide6.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+8033 INFO: Processing standard module hook 'hook-shiboken6.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+8263 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+10266 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+12061 INFO: Processing module hooks (post-graph stage)...
+12068 INFO: Performing binary vs. data reclassification (102 entries)
+12097 INFO: Looking for ctypes DLLs
+12102 INFO: Analyzing run-time hooks ...
+12103 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+12106 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+12108 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+12111 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PyInstaller\\hooks'
+12118 INFO: Creating base_library.zip...
+12152 INFO: Looking for dynamic libraries
+12494 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\shiboken6']
+12494 INFO: Extra DLL search directories (PATH): ['C:\\Saját\\Asztal\\MineWild - Magyar Minecraft Szerver Közösség\\Projectek\\Gamer Translator\\.venv313\\Lib\\site-packages\\PySide6']
+13028 INFO: Warnings written to C:\Saját\Asztal\MineWild - Magyar Minecraft Szerver Közösség\Projectek\Gamer Translator\dist\staging\dll-probe\work\QtCoreProbe\warn-QtCoreProbe.txt
+13042 INFO: Graph cross-reference written to C:\Saját\Asztal\MineWild - Magyar Minecraft Szerver Közösség\Projectek\Gamer Translator\dist\staging\dll-probe\work\QtCoreProbe\xref-QtCoreProbe.html
+13063 INFO: checking PYZ
+13063 INFO: Building PYZ because PYZ-00.toc is non existent
+13063 INFO: Building PYZ (ZlibArchive) C:\Saját\Asztal\MineWild - Magyar Minecraft Szerver Közösség\Projectek\Gamer Translator\dist\staging\dll-probe\work\QtCoreProbe\PYZ-00.pyz
+13202 INFO: Building PYZ (ZlibArchive) C:\Saját\Asztal\MineWild - Magyar Minecraft Szerver Közösség\Projectek\Gamer Translator\dist\staging\dll-probe\work\QtCoreProbe\PYZ-00.pyz completed successfully.
+13208 INFO: checking PKG
+13208 INFO: Building PKG because PKG-00.toc is non existent
+13208 INFO: Building PKG (CArchive) QtCoreProbe.pkg
+13232 INFO: Building PKG (CArchive) QtCoreProbe.pkg completed successfully.
+13233 INFO: Bootloader C:\Saját\Asztal\MineWild - Magyar Minecraft Szerver Közösség\Projectek\Gamer Translator\.venv313\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\run.exe
+13233 INFO: checking EXE
+13233 INFO: Building EXE because EXE-00.toc is non existent
+13233 INFO: Building EXE from EXE-00.toc
+13233 INFO: Copying bootloader EXE to C:\Saját\Asztal\MineWild - Magyar Minecraft Szerver Közösség\Projectek\Gamer Translator\dist\staging\dll-probe\work\QtCoreProbe\QtCoreProbe.exe
+13320 INFO: Copying icon to EXE
+13367 INFO: Copying 0 resources to EXE
+13367 INFO: Embedding manifest in EXE
+13404 INFO: Appending PKG archive to EXE
+13524 INFO: Fixing EXE headers
+13816 INFO: Building EXE from EXE-00.toc completed successfully.
+13818 INFO: checking COLLECT
+13818 INFO: Building COLLECT because COLLECT-00.toc is non existent
+13819 INFO: Building COLLECT COLLECT-00.toc
+14216 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+14220 INFO: Build complete! The results are available in: C:\Saját\Asztal\MineWild - Magyar Minecraft Szerver Közösség\Projectek\Gamer Translator\dist\staging\dll-probe\dist

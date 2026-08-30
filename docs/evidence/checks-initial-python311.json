@@ -1,0 +1,37 @@
+[
+  {
+    "check": "python-tests",
+    "exit_code": 0,
+    "duration_seconds": 8.266
+  },
+  {
+    "check": "javascript-tests",
+    "exit_code": 0,
+    "duration_seconds": 0.187
+  },
+  {
+    "check": "javascript-syntax",
+    "exit_code": 0,
+    "duration_seconds": 0.063
+  },
+  {
+    "check": "python-syntax",
+    "exit_code": 0,
+    "duration_seconds": 0.171
+  },
+  {
+    "check": "dependency-check",
+    "exit_code": 0,
+    "duration_seconds": 0.704
+  },
+  {
+    "check": "dependency-audit",
+    "exit_code": 0,
+    "duration_seconds": 3.859
+  },
+  {
+    "check": "static-security",
+    "exit_code": 1,
+    "duration_seconds": 1.047
+  }
+]
