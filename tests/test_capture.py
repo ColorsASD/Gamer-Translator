@@ -34,6 +34,8 @@ def capture_window() -> SimpleNamespace:
         registered_hotkeys={"screen_clip": (module.MOD_ALT, ord("C"))},
         registered_hotkey_primary_keys={ord("C")},
         hotkey_pressed_states={},
+        suppressed_hotkey_presses={},
+        hotkey_generation=0,
         keyboard_hook_handle=123,
         _read_settings_from_form=Mock(return_value=settings),
         _read_clipboard_image_payload=Mock(return_value={"imageSignature": "kép-1"}),
@@ -235,10 +237,11 @@ class CaptureCancellationTests(unittest.TestCase):
         self.native.CallNextHookEx.return_value = 73
         self.addCleanup(patch.stopall)
 
-    def key_event(self, key, *, message=None, flags=0, n_code=None):
+    def key_event(self, key, *, message=None, flags=0, n_code=None, extra_info=0):
         event = module.KBDLLHOOKSTRUCT()
         event.vkCode = key
         event.flags = flags
+        event.dwExtraInfo = extra_info
         return MainWindow._keyboard_hook_proc(
             self.window,
             module.HC_ACTION if n_code is None else n_code,
@@ -263,12 +266,16 @@ class CaptureCancellationTests(unittest.TestCase):
         self.assertEqual(self.key_event(ord("S")), 73)
         self.assertTrue(self.window._is_screen_clip_hotkey_armed())
 
-    def test_injected_cancel_key_does_not_change_permission(self):
+    def test_own_injected_cancel_key_does_not_change_permission(self):
         for key in (0x1B, ord("S")):
             with self.subTest(key=key):
-                self.assertEqual(self.key_event(key, flags=module.LLKHF_INJECTED), 73)
+                self.assertEqual(self.key_event(key, flags=module.LLKHF_INJECTED, extra_info=module.OWN_INPUT_MARKER), 73)
                 self.assertTrue(self.window._is_screen_clip_hotkey_armed())
         self.window._handle_hotkey_keydown.assert_not_called()
+
+    def test_external_injected_escape_cancels_permission(self):
+        self.assertEqual(self.key_event(0x1B, flags=module.LLKHF_INJECTED), 73)
+        self.assertFalse(self.window._is_screen_clip_hotkey_armed())
 
     def test_escape_keyup_does_not_cancel_permission(self):
         self.assertEqual(self.key_event(0x1B, message=module.WM_KEYUP), 73)

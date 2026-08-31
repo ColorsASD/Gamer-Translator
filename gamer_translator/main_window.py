@@ -76,6 +76,9 @@ RESPONSE_FOLLOWUP_MAX_TIMEOUT_SECONDS = 120.0
 RESPONSE_FOLLOWUP_MAX_ERROR_COUNT = 5
 MAX_CLIPBOARD_IMAGE_PIXELS = 40_000_000
 MAX_CLIPBOARD_IMAGE_BYTES = 20 * 1024 * 1024
+# Csak a saját begépelés kerülheti meg a gyorsgombszűrést; a külső
+# makrók/injektált események ugyanúgy kezelendők, mint a fizikai bevitel.
+OWN_INPUT_MARKER = uuid.uuid4().int & ((1 << (ctypes.sizeof(ctypes.c_void_p) * 8)) - 1)
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -261,8 +264,8 @@ def build_unicode_inputs(text: str) -> list[INPUT]:
 
         for index in range(0, len(encoded_character), 2):
             scan_code = int.from_bytes(encoded_character[index : index + 2], "little")
-            inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=scan_code, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=0)))
-            inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=scan_code, dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)))
+            inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=scan_code, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=OWN_INPUT_MARKER)))
+            inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=scan_code, dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time=0, dwExtraInfo=OWN_INPUT_MARKER)))
 
     return inputs
 
@@ -282,7 +285,7 @@ def build_key_input(virtual_key: int, *, key_up: bool = False) -> INPUT:
             wScan=0,
             dwFlags=KEYEVENTF_KEYUP if key_up else 0,
             time=0,
-            dwExtraInfo=0,
+            dwExtraInfo=OWN_INPUT_MARKER,
         ),
     )
 
@@ -327,7 +330,7 @@ def build_scan_code_input(virtual_key: int, *, key_up: bool = False) -> INPUT:
             wScan=scan_code,
             dwFlags=flags,
             time=0,
-            dwExtraInfo=0,
+            dwExtraInfo=OWN_INPUT_MARKER,
         ),
     )
 
@@ -970,12 +973,15 @@ class MainWindow(QMainWindow):
         self.registered_hotkeys: dict[str, tuple[int, int]] = {}
         self.hotkey_errors: dict[str, str] = {}
         self.hotkey_pressed_states: dict[str, bool] = {}
+        self.suppressed_hotkey_presses: dict[tuple[int, bool], str] = {}
+        self.hotkey_generation = 0
+        self.hotkey_action_running = False
         self.registered_hotkey_primary_keys: set[int] = set()
         self.keyboard_hook_handle = None
         self.keyboard_hook_callback = None
         self.mouse_hook_handle = None
         self.mouse_hook_callback = None
-        self.mouse_recording_buttons: set[int] = set()
+        self.mouse_recording_buttons: set[tuple[int, bool]] = set()
         self.hotkey_system_integration_enabled = False
         self.native_window_theme_applied = False
         self.exit_requested = False
@@ -1131,6 +1137,7 @@ class MainWindow(QMainWindow):
         if self.hotkey_system_integration_enabled:
             if active_hotkey_editor() is not None:
                 self._clear_screen_clip_hotkey_arm()
+                self.hotkey_generation += 1
             QTimer.singleShot(0, self._update_keyboard_hook_state)
 
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
@@ -2884,7 +2891,8 @@ class MainWindow(QMainWindow):
             return
 
         self.hotkey_system_integration_enabled = True
-        self._unregister_hotkeys()
+        self._clear_screen_clip_hotkey_arm()
+        self.hotkey_generation += 1
         self.settings = self._read_settings_from_form()
 
         configured_hotkeys: dict[str, tuple[int, int]] = {}
@@ -2927,18 +2935,22 @@ class MainWindow(QMainWindow):
         self.registered_hotkeys = {
             action: hotkey for action, hotkey in configured_hotkeys.items() if action not in self.hotkey_errors
         }
-        self.hotkey_pressed_states = {action: False for action in self.registered_hotkeys}
+        self.hotkey_pressed_states = {
+            action: action in self.suppressed_hotkey_presses.values() for action in self.registered_hotkeys
+        }
         self.registered_hotkey_primary_keys = {hotkey_key for _hotkey_modifiers, hotkey_key in self.registered_hotkeys.values()}
         self._update_keyboard_hook_state()
 
     def _unregister_hotkeys(self) -> None:
         self._clear_screen_clip_hotkey_arm()
+        self.hotkey_generation += 1
 
         if sys.platform != "win32":
             return
 
         self.registered_hotkeys = {}
         self.hotkey_pressed_states = {}
+        self.suppressed_hotkey_presses.clear()
         self.registered_hotkey_primary_keys = set()
         self._update_keyboard_hook_state()
 
@@ -2946,19 +2958,21 @@ class MainWindow(QMainWindow):
         if sys.platform != "win32":
             return
 
-        if self.registered_hotkeys:
+        # Átkötés/tiltás nem szakíthatja félbe az elnyelt down/up párokat.
+        # Az utolsó felengedés után a már nem szükséges hook is megszűnik.
+        pending_keyboard = any(key not in MOUSE_KEYCODES for key, _injected in self.suppressed_hotkey_presses)
+        pending_mouse = any(key in MOUSE_KEYCODES for key, _injected in self.suppressed_hotkey_presses)
+        if self.registered_hotkeys or pending_keyboard:
             self._install_keyboard_hook()
-            if self.registered_hotkeys:
-                self._install_mouse_hook()
-            if not self.registered_hotkeys:
-                self._uninstall_keyboard_hook()
-            return
-
-        self._uninstall_keyboard_hook()
-        if self.hotkey_system_integration_enabled and (active_hotkey_editor() is not None or self.mouse_recording_buttons):
+        else:
+            self._uninstall_keyboard_hook()
+        if (self.registered_hotkeys or pending_mouse
+                or self.hotkey_system_integration_enabled and (active_hotkey_editor() is not None or self.mouse_recording_buttons)):
             self._install_mouse_hook()
         else:
             self._uninstall_mouse_hook()
+        if not self.registered_hotkeys and not pending_keyboard:
+            self._uninstall_keyboard_hook()
 
     def _install_keyboard_hook(self) -> None:
         if sys.platform != "win32" or self.keyboard_hook_handle is not None:
@@ -3029,7 +3043,8 @@ class MainWindow(QMainWindow):
             return user32.CallNextHookEx(self.mouse_hook_handle, n_code, w_param, l_param)
 
         mouse_data = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-        if mouse_data.flags & LLMHF_INJECTED:
+        injected = bool(mouse_data.flags & LLMHF_INJECTED)
+        if injected and int(mouse_data.dwExtraInfo) == OWN_INPUT_MARKER:
             return user32.CallNextHookEx(self.mouse_hook_handle, n_code, w_param, l_param)
 
         button = (int(mouse_data.mouseData) >> 16) & 0xFFFF
@@ -3037,42 +3052,57 @@ class MainWindow(QMainWindow):
         if vk_code is None:
             return user32.CallNextHookEx(self.mouse_hook_handle, n_code, w_param, l_param)
 
+        press = (vk_code, injected)
         if message == WM_XBUTTONUP:
-            if vk_code in self.mouse_recording_buttons:
-                self.mouse_recording_buttons.discard(vk_code)
+            if press in self.mouse_recording_buttons:
+                self.mouse_recording_buttons.discard(press)
                 QTimer.singleShot(0, self._update_keyboard_hook_state)
                 return 1
-            if self._handle_hotkey_keyup(vk_code):
+            if self._handle_hotkey_keyup(vk_code, injected=injected):
                 return 1
         else:
+            if press in self.mouse_recording_buttons:
+                return 1
+            if any(key == vk_code for key, _source in self.suppressed_hotkey_presses):
+                self._handle_hotkey_keydown(vk_code, injected=injected)
+                return 1
             editor = active_hotkey_editor()
             if editor is not None:
                 # Rögzítés közben nem indítunk fordítást és nem navigálunk
                 # vissza/előre. A felirat frissítése már az eseményhurok dolga.
-                if vk_code not in self.mouse_recording_buttons:
-                    self.mouse_recording_buttons.add(vk_code)
-                    modifiers = current_hotkey_modifiers()
-                    QTimer.singleShot(0, lambda: editor.record_mouse_button(vk_code, modifiers))
+                self.mouse_recording_buttons.add(press)
+                modifiers = current_hotkey_modifiers()
+                QTimer.singleShot(0, lambda: editor.record_mouse_button(vk_code, modifiers))
                 return 1
-            if self._handle_hotkey_keydown(vk_code):
+            if self._handle_hotkey_keydown(vk_code, injected=injected):
                 return 1
 
         return user32.CallNextHookEx(self.mouse_hook_handle, n_code, w_param, l_param)
 
     def _keyboard_hook_proc(self, n_code: int, w_param, l_param):
-        if n_code != HC_ACTION or not self.registered_hotkeys:
+        if n_code != HC_ACTION:
             return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
 
         message = int(w_param)
+        if message not in (WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP, WM_SYSKEYUP):
+            return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
         key_data = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
         vk_code = int(key_data.vkCode)
 
-        if key_data.flags & LLKHF_INJECTED:
+        injected = bool(key_data.flags & LLKHF_INJECTED)
+        if injected and int(key_data.dwExtraInfo) == OWN_INPUT_MARKER:
             return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
 
-        if message in (WM_KEYUP, WM_SYSKEYUP) and vk_code in self.registered_hotkey_primary_keys:
-            if self._handle_hotkey_keyup(vk_code):
+        if message in (WM_KEYUP, WM_SYSKEYUP):
+            if self._handle_hotkey_keyup(vk_code, injected=injected):
                 return 1
+        elif any(key == vk_code for key, _source in self.suppressed_hotkey_presses):
+            # A már elnyelt gomb ismétlése a rögzítőmezőnek sem adható át.
+            self._handle_hotkey_keydown(vk_code, injected=injected)
+            return 1
+
+        if not self.registered_hotkeys:
+            return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
 
         if active_hotkey_editor() is not None:
             # A rögzítés nem folytathat egy korábban megszakított kivágást;
@@ -3081,7 +3111,7 @@ class MainWindow(QMainWindow):
             return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
 
         if message in (WM_KEYDOWN, WM_SYSKEYDOWN):
-            if vk_code in self.registered_hotkey_primary_keys and self._handle_hotkey_keydown(vk_code):
+            if vk_code in self.registered_hotkey_primary_keys and self._handle_hotkey_keydown(vk_code, injected=injected):
                 return 1
 
             # Az Esc megszakítja a saját kivágást. A külön indított Windows
@@ -3092,12 +3122,13 @@ class MainWindow(QMainWindow):
 
         return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
 
-    def _handle_hotkey_keydown(self, vk_code: int) -> bool:
+    def _handle_hotkey_keydown(self, vk_code: int, *, injected: bool = False) -> bool:
         # Ugyanaz a lenyomva tartott főgomb módosítóváltáskor sem indíthat
         # egy másik, ugyanarra a gombra beállított műveletet.
-        if any(key == vk_code and self.hotkey_pressed_states.get(action, False)
-               for action, (_modifiers, key) in self.registered_hotkeys.items()):
-            return True
+        for (key, _source), action in list(self.suppressed_hotkey_presses.items()):
+            if key == vk_code:
+                self.suppressed_hotkey_presses[(vk_code, injected)] = action
+                return True
 
         for action, (hotkey_modifiers, hotkey_key) in self.registered_hotkeys.items():
             if hotkey_key != vk_code:
@@ -3106,40 +3137,61 @@ class MainWindow(QMainWindow):
             if not self._current_modifiers_match(hotkey_modifiers):
                 continue
 
-            if not self.hotkey_pressed_states.get(action, False):
-                self.hotkey_pressed_states[action] = True
-                QTimer.singleShot(0, lambda action_name=action: self._trigger_hotkey_action(action_name))
+            self.suppressed_hotkey_presses[(vk_code, injected)] = action
+            self.hotkey_pressed_states[action] = True
+            self._mask_hotkey_modifier_menu(hotkey_modifiers)
+            generation = self.hotkey_generation
+            QTimer.singleShot(0, lambda action_name=action: self._trigger_hotkey_action(action_name, generation))
 
             return True
 
         return False
 
-    def _handle_hotkey_keyup(self, vk_code: int) -> bool:
-        for action, (_hotkey_modifiers, hotkey_key) in self.registered_hotkeys.items():
-            if hotkey_key != vk_code:
-                continue
+    def _handle_hotkey_keyup(self, vk_code: int, *, injected: bool = False) -> bool:
+        action = self.suppressed_hotkey_presses.pop((vk_code, injected), None)
+        if action is None:
+            return False
+        if action in self.hotkey_pressed_states:
+            self.hotkey_pressed_states[action] = action in self.suppressed_hotkey_presses.values()
+        if not self.registered_hotkeys:
+            QTimer.singleShot(0, self._update_keyboard_hook_state)
+        return True
 
-            if self.hotkey_pressed_states.get(action, False):
-                self.hotkey_pressed_states[action] = False
-                return True
-
-        return False
-
-    def _trigger_hotkey_action(self, action: str) -> None:
-        if active_hotkey_editor() is not None:
+    def _trigger_hotkey_action(self, action: str, generation: int | None = None) -> None:
+        if (action not in self.registered_hotkeys
+                or generation is not None and generation != self.hotkey_generation
+                or self.hotkey_action_running
+                or active_hotkey_editor() is not None):
             return
 
-        if action == "type_out":
-            self._trigger_type_out_hotkey()
-            return
+        self.hotkey_action_running = True
+        try:
+            if action == "type_out":
+                self._trigger_type_out_hotkey()
+            elif action == "screen_clip":
+                self._trigger_screen_clip_hotkey()
+            elif action == "quick_chat":
+                self._trigger_quick_chat_hotkey()
+        finally:
+            self.hotkey_action_running = False
 
-        if action == "screen_clip":
-            self._trigger_screen_clip_hotkey()
+    def _mask_hotkey_modifier_menu(self, modifiers: int) -> None:
+        if sys.platform != "win32":
             return
-
-        if action == "quick_chat":
-            self._trigger_quick_chat_hotkey()
+        if not (modifiers & MOD_WIN or modifiers & MOD_ALT and not modifiers & MOD_CONTROL):
             return
+        # Az elnyelt főgomb nélkül az Alt/Win puszta lenyomásnak látszana.
+        # A funkció nélküli vkFF pár maszkolja ezt, a valódi módosítók
+        # felengedését viszont továbbengedjük, hogy ne maradjanak beragadva.
+        inputs = (INPUT * 2)(build_key_input(0xFF), build_key_input(0xFF, key_up=True))
+        inserted = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
+        if inserted == 1:
+            release = (INPUT * 1)(build_key_input(0xFF, key_up=True))
+            user32.SendInput(1, release, ctypes.sizeof(INPUT))
+        if inserted != 2:
+            QTimer.singleShot(0, lambda: self._set_live_status(
+                "A gyorsgomb elnyelve, de a Windows nem engedte az Alt/Win menüaktiválásának maszkolását."
+            ))
 
     def _current_modifiers_match(self, modifiers: int) -> bool:
         if sys.platform != "win32":
@@ -3239,6 +3291,9 @@ class MainWindow(QMainWindow):
             target_window = user32.GetForegroundWindow()
 
         for character in self.last_translated_text:
+            # A hosszú begépelés alatt is ki kell szolgálni a natív hookot,
+            # különben a Windows időtúllépés miatt eltávolíthatja.
+            QGuiApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
             if not target_window or user32.GetForegroundWindow() != target_window:
                 self._set_live_status("A begépelés megszakadt, mert megváltozott az aktív ablak.")
                 return False

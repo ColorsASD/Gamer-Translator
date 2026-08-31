@@ -23,6 +23,9 @@ def hotkey_window(bindings=None) -> SimpleNamespace:
         registered_hotkeys=bindings,
         registered_hotkey_primary_keys={key for _modifiers, key in bindings.values()},
         hotkey_pressed_states={action: False for action in bindings},
+        suppressed_hotkey_presses={},
+        hotkey_generation=0,
+        hotkey_action_running=False,
         hotkey_errors={},
         keyboard_hook_handle=123,
         keyboard_hook_callback=Mock(),
@@ -34,11 +37,12 @@ def hotkey_window(bindings=None) -> SimpleNamespace:
         _trigger_type_out_hotkey=Mock(),
         _trigger_screen_clip_hotkey=Mock(),
         _trigger_quick_chat_hotkey=Mock(),
+        _mask_hotkey_modifier_menu=Mock(),
     )
     for name in (
         "_mouse_hook_proc", "_keyboard_hook_proc", "_handle_hotkey_keydown",
         "_handle_hotkey_keyup", "_trigger_hotkey_action", "_current_modifiers_match",
-        "_clear_screen_clip_hotkey_arm", "_unregister_hotkeys", "_update_keyboard_hook_state",
+        "_clear_screen_clip_hotkey_arm", "_register_hotkeys", "_unregister_hotkeys", "_update_keyboard_hook_state",
         "_handle_hotkey_focus_changed",
         "_install_keyboard_hook", "_uninstall_keyboard_hook", "_install_mouse_hook",
         "_uninstall_mouse_hook",
@@ -61,20 +65,22 @@ class MouseHotkeyTests(unittest.TestCase):
         self.hookproc = patch.object(module, "HOOKPROC", side_effect=lambda callback: callback).start()
         self.addCleanup(patch.stopall)
 
-    def mouse_event(self, button=1, *, message=None, flags=0, n_code=None, low_word=0):
+    def mouse_event(self, button=1, *, message=None, flags=0, n_code=None, low_word=0, extra_info=0):
         event = module.MSLLHOOKSTRUCT()
         event.mouseData = (button << 16) | low_word
         event.flags = flags
+        event.dwExtraInfo = extra_info
         return self.window._mouse_hook_proc(
             module.HC_ACTION if n_code is None else n_code,
             module.WM_XBUTTONDOWN if message is None else message,
             ctypes.pointer(event),
         )
 
-    def key_event(self, key, *, message=None, flags=0):
+    def key_event(self, key, *, message=None, flags=0, extra_info=0):
         event = module.KBDLLHOOKSTRUCT()
         event.vkCode = key
         event.flags = flags
+        event.dwExtraInfo = extra_info
         return self.window._keyboard_hook_proc(
             module.HC_ACTION,
             module.WM_KEYDOWN if message is None else message,
@@ -157,11 +163,11 @@ class MouseHotkeyTests(unittest.TestCase):
                 self.assertEqual(self.mouse_event(button), 73)
         self.single_shot.assert_not_called()
 
-    def test_injected_mouse_events_never_activate_or_release_real_binding(self):
-        self.assertEqual(self.mouse_event(flags=module.LLMHF_INJECTED), 73)
+    def test_own_injected_mouse_events_never_activate_or_release_real_binding(self):
+        self.assertEqual(self.mouse_event(flags=module.LLMHF_INJECTED, extra_info=module.OWN_INPUT_MARKER), 73)
         self.single_shot.assert_not_called()
         self.assertEqual(self.mouse_event(), 1)
-        self.assertEqual(self.mouse_event(message=module.WM_XBUTTONUP, flags=module.LLMHF_INJECTED), 73)
+        self.assertEqual(self.mouse_event(message=module.WM_XBUTTONUP, flags=module.LLMHF_INJECTED, extra_info=module.OWN_INPUT_MARKER), 73)
         self.assertTrue(self.window.hotkey_pressed_states["screen_clip"])
         self.assertEqual(self.mouse_event(message=module.WM_XBUTTONUP), 1)
 
@@ -173,7 +179,7 @@ class MouseHotkeyTests(unittest.TestCase):
         self.assertEqual(self.mouse_event(), 1)
         recorder.record_mouse_button.assert_not_called()
         self.single_shot.assert_called_once()
-        self.assertEqual(self.window.mouse_recording_buttons, {0x05})
+        self.assertEqual(self.window.mouse_recording_buttons, {(0x05, False)})
         self.assertFalse(self.window.hotkey_pressed_states["screen_clip"])
         self.modifiers.return_value = 0
         self.run_queued_actions()
@@ -195,13 +201,45 @@ class MouseHotkeyTests(unittest.TestCase):
         self.editor.return_value = recorder
         self.assertEqual(self.mouse_event(1), 1)
         self.assertEqual(self.mouse_event(2), 1)
-        self.assertEqual(self.window.mouse_recording_buttons, {0x05, 0x06})
+        self.assertEqual(self.window.mouse_recording_buttons, {(0x05, False), (0x06, False)})
         self.run_queued_actions()
         self.assertEqual(recorder.record_mouse_button.call_args_list, [call(0x05, 0), call(0x06, 0)])
         self.assertEqual(self.mouse_event(1, message=module.WM_XBUTTONUP), 1)
-        self.assertEqual(self.window.mouse_recording_buttons, {0x06})
+        self.assertEqual(self.window.mouse_recording_buttons, {(0x06, False)})
         self.assertEqual(self.mouse_event(2, message=module.WM_XBUTTONUP), 1)
         self.assertEqual(self.window.mouse_recording_buttons, set())
+
+    def test_external_mouse_release_cannot_end_physical_recording(self):
+        self.editor.return_value = Mock()
+        self.assertEqual(self.mouse_event(), 1)
+        self.assertEqual(self.mouse_event(message=module.WM_XBUTTONUP, flags=module.LLMHF_INJECTED), 73)
+        self.assertEqual(self.window.mouse_recording_buttons, {(0x05, False)})
+        self.editor.return_value = None
+        self.assertEqual(self.mouse_event(), 1)
+        self.assertEqual(self.mouse_event(message=module.WM_XBUTTONUP), 1)
+        self.assertEqual(self.window.mouse_recording_buttons, set())
+        self.assert_no_actions()
+
+    def test_physical_and_injected_mouse_recording_drain_separately(self):
+        self.editor.return_value = Mock()
+        self.assertEqual(self.mouse_event(), 1)
+        self.assertEqual(self.mouse_event(flags=module.LLMHF_INJECTED), 1)
+        self.assertEqual(self.window.mouse_recording_buttons, {(0x05, False), (0x05, True)})
+        self.editor.return_value = None
+        self.assertEqual(self.mouse_event(message=module.WM_XBUTTONUP), 1)
+        self.assertEqual(self.window.mouse_recording_buttons, {(0x05, True)})
+        self.assertEqual(self.mouse_event(message=module.WM_XBUTTONUP, flags=module.LLMHF_INJECTED), 1)
+        self.assertEqual(self.window.mouse_recording_buttons, set())
+        self.assert_no_actions()
+
+    def test_brief_recorder_focus_cancels_queued_action_even_after_focus_leaves(self):
+        self.window.hotkey_system_integration_enabled = True
+        self.assertEqual(self.mouse_event(), 1)
+        self.editor.return_value = Mock()
+        self.window._handle_hotkey_focus_changed()
+        self.editor.return_value = None
+        self.run_queued_actions()
+        self.assert_no_actions()
 
     def test_keyboard_recording_cancels_stale_capture_without_activating_actions(self):
         self.window = hotkey_window({"screen_clip": (module.MOD_ALT, ord("C"))})
@@ -323,7 +361,7 @@ class MouseHotkeyTests(unittest.TestCase):
     def test_recording_hook_survives_focus_loss_until_mouse_release(self):
         self.window = hotkey_window({})
         self.window.hotkey_system_integration_enabled = True
-        self.window.mouse_recording_buttons.add(0x05)
+        self.window.mouse_recording_buttons.add((0x05, False))
         self.window._update_keyboard_hook_state()
         self.assertEqual(self.window.mouse_hook_handle, 456)
         self.assertEqual(self.mouse_event(message=module.WM_XBUTTONUP), 1)
@@ -374,7 +412,7 @@ class MouseHotkeyTests(unittest.TestCase):
 
     def test_unregister_clears_bindings_capture_and_both_hooks(self):
         self.window.screen_clip_hotkey_armed_until = 145.0
-        self.window.mouse_recording_buttons = {0x05, 0x06}
+        self.window.mouse_recording_buttons = {(0x05, False), (0x06, False)}
         self.window._unregister_hotkeys()
         self.assertEqual(self.window.screen_clip_hotkey_armed_until, 0.0)
         self.assertEqual(self.window.registered_hotkeys, {})
@@ -391,7 +429,7 @@ class MouseHotkeyTests(unittest.TestCase):
 
     def test_mouse_hook_cleanup_clears_recording_even_without_native_handle(self):
         self.window.mouse_hook_handle = None
-        self.window.mouse_recording_buttons = {0x05}
+        self.window.mouse_recording_buttons = {(0x05, False)}
         self.window._uninstall_mouse_hook()
         self.assertEqual(self.window.mouse_recording_buttons, set())
         self.assertIsNone(self.window.mouse_hook_callback)
@@ -423,7 +461,7 @@ class HookCloseTests(unittest.TestCase):
 
         with patch.object(module, "user32", Mock()) as native:
             window = CleanupWindow()
-            window.mouse_recording_buttons = {0x06}
+            window.mouse_recording_buttons = {(0x06, False)}
             event = QCloseEvent()
             MainWindow.closeEvent(window, event)
             self.assertTrue(event.isAccepted())
