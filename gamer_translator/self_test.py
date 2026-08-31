@@ -211,17 +211,29 @@ def run_self_test(report_path: Path, duration: int, model_dir: Path | None = Non
 
             image = QImage(32, 32, QImage.Format.Format_ARGB32)
             image.fill(0xFF336699)
-            # Közvetlen betöltés elkerüli az aszinkron poll és az explicit hívás duplázását.
-            window.test_clipboard._image = image
-            payload = window._read_clipboard_image_payload()
-            assert payload is not None
-            window._process_clipboard_translation(payload)
+            # A memóriavágólap ugyanazt a jelzést adja, mint egy Windows-kivágás.
+            # Engedély nélkül még bekapcsolt képfordításnál sem indul küldés.
+            window.screen_clip_hotkey_enabled.setChecked(True)
+            window.test_clipboard.setImage(image)
+            window._wait_with_events(250)
+            assert int(window._run_javascript("document.body.dataset.submitCount", timeout_ms=5000)) == report["cycles"]
+            assert window.pending_clipboard_payload is None
+            # A saját gyorsgomb engedélyét közvetlenül élesítjük; natív
+            # billentyűküldés, Windows-kivágó és rendszervágólap nélkül.
+            window._arm_screen_clip_hotkey()
+            window.test_clipboard.setImage(image)
+            window._wait_with_events(250)
             assert window._run_javascript("document.body.dataset.fileCount", timeout_ms=5000) == "1"
             assert int(window._run_javascript("document.body.dataset.submitCount", timeout_ms=5000)) == report["cycles"] + 1
             assert window.test_clipboard.text == "Offline fordítás elkészült."
+            window.test_clipboard.setImage(image)
+            window._wait_with_events(250)
+            assert int(window._run_javascript("document.body.dataset.submitCount", timeout_ms=5000)) == report["cycles"] + 1
+            window.screen_clip_hotkey_enabled.setChecked(False)
+            report["checks"]["clipboard_requires_screen_clip_hotkey"] = True
             report["checks"]["png_attachment_native_pipeline"] = True
             assert not window.network_blocker.blocked
-            assert not window.registered_hotkeys and window.keyboard_hook_handle is None
+            assert not window.registered_hotkeys and window.keyboard_hook_handle is None and window.mouse_hook_handle is None
             report["checks"]["no_network_requests_or_native_hotkeys"] = True
 
             if model_dir is not None:

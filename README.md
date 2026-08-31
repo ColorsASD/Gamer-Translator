@@ -11,13 +11,14 @@ A Gamer Translator egy önálló Windows asztali alkalmazás, amely a `chatgpt.c
 - saját ablakos `chatgpt.com` felület
 - kézi promptküldés a felső `Prompt elküldése` gombbal
 - Windows képkivágó indítása gyorsgombbal
-- vágólapról érkező képek automatikus beküldése a ChatGPT-be
+- a saját képkivágási gyorsgombbal készített képek automatikus beküldése a ChatGPT-be
 - választható OCR mód, amely képről szöveget olvas ki és azt küldi a ChatGPT-nek
 - az OCR mód alapértelmezetten bekapcsolt
 - a kész fordítás automatikus visszamásolása a vágólapra
 - a mentett fordítás karakterenkénti begépelése gyorsgombbal
 - gyors chat overlay kézi szövegküldéshez
 - szerkeszthető gyorsgombok lenyomásos rögzítéssel
+- külön AltGr-kezelés, kiosztáshelyes írásjelek és Mouse 4–5 egérgombok gyorsgombként
 - tálcaikon dupla kattintásos elrejtéssel és visszahozással
 - háttérben tovább futó ChatGPT oldal lekicsinyítés vagy eltüntetés után is
 - képernyő tetején megjelenő fordítási overlay `Betöltés...` állapottal
@@ -27,9 +28,19 @@ A Gamer Translator egy önálló Windows asztali alkalmazás, amely a `chatgpt.c
 
 ## Alap gyorsgombok
 
-- `Alt + C`: Windows képkivágó megnyitása
+- `Alt + C`: Windows képkivágó megnyitása és a kivágott kép fordítása
 - `Alt + V`: az utolsó mentett fordítás begépelése
 - `Alt + X`: gyors chat overlay megnyitása
+
+## Gyorsgombok beállítása
+
+- Kattints a kívánt gyorsbillentyű mezőjére, majd nyomd le a kombinációt. A módosítás után mentsd el a beállításokat.
+- Az `AltGr` külön módosítóként jelenik meg, nem keveredik a külön lenyomott `Ctrl + Alt` kombinációval. Magyar kiosztáson például az `AltGr + -` az alapgombot rögzíti, nem a begépelt `*` karaktert.
+- A `Mouse 4` és `Mouse 5` az egér két oldalsó gombja. Önmagukban és módosítókkal, például `Ctrl + Mouse 4` kombinációként is használhatók mindhárom művelethez.
+- A gyorsgomb rögzítése közben a meglévő gyorsgomb nem indít műveletet. A hozzárendelt oldalsó egérgomb használatakor a program elnyeli a vissza/előre eseményt; a többi egérgomb működése változatlan.
+- Az írásjelek natív Windows-gombazonosítóval kerülnek mentésre; a mezőben az aktuális kiosztás szerinti alapgomb neve látszik. A korábban hibásan rögzített kombinációt újra kell rögzíteni.
+- Az `Fn` önálló felismerése billentyűzetfüggő. Ha a billentyűzet nem továbbítja a Windowsnak, általános gyorsgombként nem rögzíthető. Ha a gyártói szoftver támogatja, például `F13`–`F24` gombra átkötve használható. Az `Fn`-nel előállított, Windows által felismert normál billentyű rögzíthető.
+- Ha az egér gyártói szoftvere a Mouse 4–5 gombot billentyűkombinációvá alakítja, az alkalmazás azt a kombinációt látja. A közvetlen egérgombos használathoz a gomb küldjön hagyományos vissza/előre oldalgomb-eseményt.
 
 ## Projektstruktúra
 
@@ -72,7 +83,7 @@ A `-SkipDependencyInstall` kapcsolót csak előzetesen telepített és ellenőrz
 1. Indítsd el a programot.
 2. Jelentkezz be a ChatGPT-be a megnyíló saját ablakban.
 3. A `Prompt elküldése` gombbal küldd el a kézi promptot az aktuális beszélgetésbe.
-4. Használd a képkivágást, vagy illessz be képet a vágólapra.
+4. Nyomd meg a beállított képkivágási gyorsbillentyűt (alapból `Alt + C`), majd jelöld ki a fordítandó területet. A `Win + Shift + S` billentyűvel készített vagy más módon vágólapra másolt kép nem indul el automatikus fordításra.
 5. Várd meg a fordítást.
 6. Ha az app le van kicsinyítve vagy el van tüntetve, a fordítás felül egy overlay blokkban is megjelenik.
 7. A `Szöveg kiolvasása képről` beállítás alapértelmezetten be van kapcsolva. Ilyenkor a program előbb OCR-rel kiolvassa a képen lévő szöveget, és ezt küldi el a ChatGPT-nek.
@@ -82,6 +93,7 @@ A `-SkipDependencyInstall` kapcsolót csak előzetesen telepített és ellenőrz
 ## Fontos beállítások
 
 - a `Szöveg kiolvasása képről` beállítás alapból aktív
+- az automatikus képfordítás csak a saját képkivágási gyorsbillentyűhöz tartozik; az `Esc` megszakítja a várakozást, a következő kivágásra legfeljebb 45 másodperc áll rendelkezésre
 - ha a GPU gyorsítás állapota megváltozik és elmented a beállításokat, a program automatikusan újraindul
 
 ## Tálca és háttérmód
@@ -97,7 +109,7 @@ A `-SkipDependencyInstall` kapcsolót csak előzetesen telepített és ellenőrz
 - A projekt nem az OpenAI API-t használja, hanem a webes ChatGPT felületet.
 - A működés a `chatgpt.com` oldal felépítésére épül, ezért egy nagyobb felületi változás után a DOM-kezelést frissíteni kellhet.
 - Az automatizálás csak a `https://chatgpt.com` és a `https://chat.openai.com` főoldali eredeten használható. Külső oldalon leáll, az aktuális eredet az ablak felső részén látható.
-- Aktív vágólapfigyelésnél a másolt képek vagy a belőlük kiolvasott szöveg automatikusan az aktuális ChatGPT-beszélgetésbe kerül. Érzékeny adatok másolása előtt kapcsold ki a figyelést.
+- Aktív programnál a saját képkivágási gyorsbillentyű után érkező első vágólapkép vagy a belőle kiolvasott szöveg automatikusan az aktuális ChatGPT-beszélgetésbe kerül. A kivágásra várakozás közben ne másolj más képet a vágólapra; az `Esc` vagy a külön megnyomott `Win + Shift + S` törli ezt az egyszeri küldési engedélyt.
 - A program a legutóbbi fordítást és a böngésző munkamenetét helyben megőrzi. A begépelési gyorsgomb az aktív ablakba ír; sortörést és tabulátort is küldhet, ezért terminálban ne használd.
 - A vágólap képkorlátja 40 millió képpont és 20 MiB PNG-adat. Az OCR modelleket a program SHA-256 ellenőrzés után tölti be.
 

@@ -17,7 +17,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from PySide6.QtCore import QBuffer, QEasingCurve, QEvent, QEventLoop, QIODevice, QPoint, Property, QPropertyAnimation, QSignalBlocker, QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QCursor, QGuiApplication, QIcon, QKeySequence, QMouseEvent, QPixmap
+from PySide6.QtGui import QAction, QCloseEvent, QCursor, QGuiApplication, QIcon, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QGroupBox,
     QHBoxLayout,
-    QKeySequenceEdit,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -47,6 +46,15 @@ from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngin
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from .defaults import APP_NAME, CHATGPT_HOSTS, CHATGPT_URL, DEFAULT_RESPONSE_TIMEOUT_MS, DEFAULT_SETTINGS, WINDOW_TITLE
+from .hotkeys import (
+    HotkeyEdit,
+    MOUSE_KEYCODES,
+    MOD_ALTGR,
+    active_hotkey_editor,
+    current_hotkey_modifiers,
+    format_hotkey_definition,
+    parse_hotkey_definition,
+)
 from .ocr_service import OCRService
 from .settings_store import AppSettings, LastRunStatus, SettingsStore
 
@@ -96,11 +104,15 @@ if sys.platform == "win32":
     MAPVK_VK_TO_VSC = 0
     HC_ACTION = 0
     WH_KEYBOARD_LL = 13
+    WH_MOUSE_LL = 14
     WM_KEYDOWN = 0x0100
     WM_KEYUP = 0x0101
     WM_SYSKEYDOWN = 0x0104
     WM_SYSKEYUP = 0x0105
     LLKHF_INJECTED = 0x10
+    LLMHF_INJECTED = 0x01
+    WM_XBUTTONDOWN = 0x020B
+    WM_XBUTTONUP = 0x020C
     VK_CONTROL = 0x11
     VK_MENU = 0x12
     VK_SHIFT = 0x10
@@ -163,42 +175,14 @@ if sys.platform == "win32":
             ("dwExtraInfo", ULONG_PTR),
         ]
 
-    HOTKEY_MODIFIER_ALIASES = {
-        "CTRL": MOD_CONTROL,
-        "CONTROL": MOD_CONTROL,
-        "ALT": MOD_ALT,
-        "SHIFT": MOD_SHIFT,
-        "WIN": MOD_WIN,
-        "WINDOWS": MOD_WIN,
-        "META": MOD_WIN,
-    }
-
-    HOTKEY_KEYCODES = {
-        "SPACE": 0x20,
-        "TAB": VK_TAB,
-        "ENTER": VK_RETURN,
-        "RETURN": VK_RETURN,
-        "ESC": 0x1B,
-        "ESCAPE": 0x1B,
-        "BACKSPACE": 0x08,
-        "DELETE": 0x2E,
-        "DEL": 0x2E,
-        "INSERT": 0x2D,
-        "INS": 0x2D,
-        "HOME": 0x24,
-        "END": 0x23,
-        "PAGEUP": 0x21,
-        "PGUP": 0x21,
-        "PAGEDOWN": 0x22,
-        "PGDOWN": 0x22,
-        "LEFT": 0x25,
-        "UP": 0x26,
-        "RIGHT": 0x27,
-        "DOWN": 0x28,
-    }
-
-    for offset in range(1, 25):
-        HOTKEY_KEYCODES[f"F{offset}"] = 0x6F + offset
+    class MSLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [
+            ("pt", wintypes.POINT),
+            ("mouseData", wintypes.DWORD),
+            ("flags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ULONG_PTR),
+        ]
 
     HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
     user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
@@ -256,40 +240,6 @@ def resource_path(relative_path: str) -> Path:
         return Path(getattr(sys, "_MEIPASS")) / relative_path
 
     return Path(__file__).resolve().parents[1] / relative_path
-
-
-def parse_hotkey_definition(hotkey: str) -> tuple[int, int]:
-    if sys.platform != "win32":
-        raise ValueError("A globális gyorsbillentyű csak Windowson támogatott.")
-
-    tokens = [part.strip().upper() for part in str(hotkey).replace("-", "+").split("+") if part.strip()]
-
-    if not tokens:
-        raise ValueError("Adj meg egy fő billentyűt, például: Alt+C vagy Alt+V")
-
-    modifiers = 0
-
-    for token in tokens[:-1]:
-        modifier = HOTKEY_MODIFIER_ALIASES.get(token)
-
-        if modifier is None:
-            raise ValueError(f"Ismeretlen módosító billentyű: {token}")
-
-        modifiers |= modifier
-
-    key_token = tokens[-1]
-
-    if len(key_token) == 1 and "A" <= key_token <= "Z":
-        vk = ord(key_token)
-    elif len(key_token) == 1 and "0" <= key_token <= "9":
-        vk = ord(key_token)
-    else:
-        vk = HOTKEY_KEYCODES.get(key_token)
-
-    if vk is None:
-        raise ValueError(f"Nem támogatott gyorsbillentyű: {key_token}")
-
-    return modifiers, vk
 
 
 def build_unicode_inputs(text: str) -> list[INPUT]:
@@ -1023,6 +973,10 @@ class MainWindow(QMainWindow):
         self.registered_hotkey_primary_keys: set[int] = set()
         self.keyboard_hook_handle = None
         self.keyboard_hook_callback = None
+        self.mouse_hook_handle = None
+        self.mouse_hook_callback = None
+        self.mouse_recording_buttons: set[int] = set()
+        self.hotkey_system_integration_enabled = False
         self.native_window_theme_applied = False
         self.exit_requested = False
         self.window_was_maximized_before_hide = False
@@ -1067,7 +1021,6 @@ class MainWindow(QMainWindow):
         self.clipboard = clipboard if clipboard is not None else QGuiApplication.clipboard()
         self.last_seen_image_signature = self._current_clipboard_signature()
         self.pending_clipboard_payload: dict[str, Any] | None = None
-        self.pending_clipboard_check_requested = False
         self.screen_clip_hotkey_armed_until = 0.0
         self.clipboard_debounce_timer = QTimer(self)
         self.clipboard_debounce_timer.setSingleShot(True)
@@ -1097,6 +1050,7 @@ class MainWindow(QMainWindow):
 
         if app is not None:
             app.applicationStateChanged.connect(self._handle_application_state_changed)
+            app.focusChanged.connect(self._handle_hotkey_focus_changed)
 
         QTimer.singleShot(0, self._register_hotkeys)
         if open_on_start:
@@ -1109,9 +1063,11 @@ class MainWindow(QMainWindow):
             self._hide_to_tray(show_message=True)
             return
 
+        self.hotkey_system_integration_enabled = False
         self.store.save_settings(self._read_settings_from_form())
         self._unregister_hotkeys()
         self._uninstall_keyboard_hook()
+        self._uninstall_mouse_hook()
         self._restore_system_sleep_state()
         self._shutdown_background_executor()
         if self.tray_icon is not None:
@@ -1167,6 +1123,15 @@ class MainWindow(QMainWindow):
     def _handle_application_state_changed(self, _state) -> None:
         QTimer.singleShot(0, self._sync_browser_host_mode)
         QTimer.singleShot(0, self._sync_browser_runtime_state)
+        self._handle_hotkey_focus_changed()
+
+    def _handle_hotkey_focus_changed(self, *_widgets) -> None:
+        # A tesztmód nem hívja a natív regisztrálást, ezért puszta mezőfókusz
+        # ott sem telepíthet rendszerhookot.
+        if self.hotkey_system_integration_enabled:
+            if active_hotkey_editor() is not None:
+                self._clear_screen_clip_hotkey_arm()
+            QTimer.singleShot(0, self._update_keyboard_hook_state)
 
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
         if event.key() == Qt.Key.Key_Escape and self.drawer_open:
@@ -1220,6 +1185,10 @@ class MainWindow(QMainWindow):
         self.type_out_hotkey_enabled = QCheckBox("A memóriába mentett fordítás legyen begépelhető gyorsbillentyűvel")
         self.type_out_hotkey = self._build_hotkey_edit()
         self.screen_clip_hotkey_enabled = QCheckBox("A Windows képkivágó nyíljon meg gyorsbillentyűvel")
+        self.screen_clip_hotkey_enabled.setToolTip(
+            "Csak az itt beállított gyorsbillentyűvel készített kép kerül automatikusan fordításra. "
+            "A Win+Shift+S és a többi másolt kép nem indít fordítást."
+        )
         self.screen_clip_hotkey = self._build_hotkey_edit()
         self.quick_chat_hotkey_enabled = QCheckBox("A gyors chat overlay nyíljon meg gyorsbillentyűvel")
         self.quick_chat_hotkey = self._build_hotkey_edit()
@@ -1558,7 +1527,7 @@ class MainWindow(QMainWindow):
             #accentHeaderButton:pressed {
                 background: #525966;
             }
-            QLineEdit, QKeySequenceEdit, QPlainTextEdit, QSpinBox {
+            QLineEdit, QPlainTextEdit, QSpinBox {
                 background: #17191d;
                 color: #f1f1f1;
                 border: 1px solid #343842;
@@ -1643,21 +1612,14 @@ class MainWindow(QMainWindow):
         spin_box.setAccelerated(True)
         return spin_box
 
-    def _build_hotkey_edit(self) -> QKeySequenceEdit:
-        hotkey_edit = QKeySequenceEdit()
+    def _build_hotkey_edit(self) -> HotkeyEdit:
+        return HotkeyEdit()
 
-        if hasattr(hotkey_edit, "setMaximumSequenceLength"):
-            hotkey_edit.setMaximumSequenceLength(1)
+    def _set_hotkey_value(self, hotkey_edit: HotkeyEdit, value: str) -> None:
+        hotkey_edit.set_hotkey_value(value)
 
-        hotkey_edit.setToolTip("Kattints ide, majd nyomd le a kívánt billentyűkombinációt.")
-        return hotkey_edit
-
-    def _set_hotkey_value(self, hotkey_edit: QKeySequenceEdit, value: str) -> None:
-        hotkey_edit.setKeySequence(QKeySequence(value))
-
-    def _read_hotkey_value(self, hotkey_edit: QKeySequenceEdit, fallback: str) -> str:
-        hotkey_value = hotkey_edit.keySequence().toString(QKeySequence.SequenceFormat.PortableText).strip()
-        return hotkey_value or fallback
+    def _read_hotkey_value(self, hotkey_edit: HotkeyEdit, fallback: str) -> str:
+        return hotkey_edit.hotkey_value() or fallback
 
     def _handle_overlay_opacity_slider_changed(self, value: int) -> None:
         safe_value = max(1, min(100, int(value)))
@@ -2242,41 +2204,37 @@ class MainWindow(QMainWindow):
             self.clipboard_debounce_timer.start()
             return
 
-        payload = self._read_clipboard_image_payload()
-        screen_clip_hotkey_armed = self._is_screen_clip_hotkey_armed()
+        # Csak a saját gyorsgombhoz tartozó eseménynél rögzített képet küldjük.
+        # A vágólap a késleltetés alatt már tartalmazhat egy másik, privát képet.
+        payload = self.pending_clipboard_payload
+        self.pending_clipboard_payload = None
 
-        if not payload:
+        if payload is None:
             return
 
-        signature = str(payload["imageSignature"])
-
-        if screen_clip_hotkey_armed and signature:
-            self._clear_screen_clip_hotkey_arm()
-            self.last_seen_image_signature = signature
-            self._process_clipboard_translation(payload)
-            return
-
-        if not signature or signature == self.last_seen_image_signature:
-            return
-
-        self.last_seen_image_signature = signature
+        self.last_seen_image_signature = str(payload["imageSignature"])
         self._process_clipboard_translation(payload)
 
     def _handle_clipboard_changed(self, mode) -> None:  # type: ignore[override]
         if mode != self.clipboard.Mode.Clipboard:
             return
 
-        if self.clipboard_translation_in_progress:
-            self.pending_clipboard_check_requested = True
-            pending_payload = self._read_clipboard_image_payload()
-
-            if pending_payload:
-                self.pending_clipboard_payload = pending_payload
-
-                if self._is_screen_clip_hotkey_armed():
-                    self._clear_screen_clip_hotkey_arm()
-
+        if not self._is_screen_clip_hotkey_armed():
             return
+
+        settings = self._read_settings_from_form()
+        if not settings.monitoring_enabled or not settings.screen_clip_hotkey_enabled:
+            self._clear_screen_clip_hotkey_arm()
+            return
+
+        payload = self._read_clipboard_image_payload()
+        if not payload or not payload.get("imageSignature"):
+            return
+
+        # Az engedély egyszer használható, és az eseménynél dől el, nem a
+        # későbbi küldéskor. Az azonos tartalmú új kivágás is új kérés.
+        self._clear_screen_clip_hotkey_arm()
+        self.pending_clipboard_payload = payload
 
         self.clipboard_debounce_timer.start()
 
@@ -2335,7 +2293,7 @@ class MainWindow(QMainWindow):
                         show_overlay=True,
                         play_sound=not bool(progress_state["notified"]),
                     )
-                self._save_last_run_status(f"A fordítás a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {self.settings.type_out_hotkey}")
+                self._save_last_run_status(f"A fordítás a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {format_hotkey_definition(self.settings.type_out_hotkey)}")
                 return
 
             if translated_text:
@@ -2358,23 +2316,7 @@ class MainWindow(QMainWindow):
             self.clipboard_translation_heartbeat_monotonic = 0.0
             self._end_browser_interaction()
 
-            pending_payload = self.pending_clipboard_payload
-            self.pending_clipboard_payload = None
-            pending_check_requested = self.pending_clipboard_check_requested
-            self.pending_clipboard_check_requested = False
-
-            if pending_payload:
-                pending_signature = str(pending_payload.get("imageSignature") or "")
-
-                if pending_signature and pending_signature != self.last_seen_image_signature:
-                    self.last_seen_image_signature = pending_signature
-                    QTimer.singleShot(
-                        0,
-                        lambda queued_payload=pending_payload: self._process_clipboard_translation(queued_payload),
-                    )
-                return
-
-            if pending_check_requested:
+            if self.pending_clipboard_payload is not None:
                 self.clipboard_debounce_timer.start()
 
     def _build_translation_delivery_payload(self, payload: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
@@ -2654,7 +2596,7 @@ class MainWindow(QMainWindow):
                     play_sound=not bool(progress_state["notified"]),
                 )
             self._save_last_run_status(
-                f"A gyors chat fordítása a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {self.settings.type_out_hotkey}"
+                f"A gyors chat fordítása a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {format_hotkey_definition(self.settings.type_out_hotkey)}"
             )
         except Exception as error:  # noqa: BLE001
             self._hide_translation_overlay()
@@ -2941,6 +2883,7 @@ class MainWindow(QMainWindow):
             }
             return
 
+        self.hotkey_system_integration_enabled = True
         self._unregister_hotkeys()
         self.settings = self._read_settings_from_form()
 
@@ -2989,6 +2932,8 @@ class MainWindow(QMainWindow):
         self._update_keyboard_hook_state()
 
     def _unregister_hotkeys(self) -> None:
+        self._clear_screen_clip_hotkey_arm()
+
         if sys.platform != "win32":
             return
 
@@ -3003,9 +2948,17 @@ class MainWindow(QMainWindow):
 
         if self.registered_hotkeys:
             self._install_keyboard_hook()
+            if self.registered_hotkeys:
+                self._install_mouse_hook()
+            if not self.registered_hotkeys:
+                self._uninstall_keyboard_hook()
             return
 
         self._uninstall_keyboard_hook()
+        if self.hotkey_system_integration_enabled and (active_hotkey_editor() is not None or self.mouse_recording_buttons):
+            self._install_mouse_hook()
+        else:
+            self._uninstall_mouse_hook()
 
     def _install_keyboard_hook(self) -> None:
         if sys.platform != "win32" or self.keyboard_hook_handle is not None:
@@ -3026,6 +2979,7 @@ class MainWindow(QMainWindow):
             self.registered_hotkeys = {}
             self.hotkey_pressed_states = {}
             self.registered_hotkey_primary_keys = set()
+            self.keyboard_hook_handle = None
             self.keyboard_hook_callback = None
 
     def _uninstall_keyboard_hook(self) -> None:
@@ -3038,6 +2992,73 @@ class MainWindow(QMainWindow):
 
         self.keyboard_hook_callback = None
 
+    def _install_mouse_hook(self) -> None:
+        if sys.platform != "win32" or self.mouse_hook_handle is not None:
+            return
+
+        module_handle = kernel32.GetModuleHandleW(None)
+        self.mouse_hook_callback = HOOKPROC(self._mouse_hook_proc)
+        self.mouse_hook_handle = user32.SetWindowsHookExW(WH_MOUSE_LL, self.mouse_hook_callback, module_handle, 0)
+
+        if not self.mouse_hook_handle:
+            error_code = int(kernel32.GetLastError())
+            suffix = f" Windows hibakód: {error_code}" if error_code else ""
+            for action, (_modifiers, key) in list(self.registered_hotkeys.items()):
+                if key in MOUSE_KEYCODES:
+                    self.hotkey_errors[action] = f"Az egérgombfigyelő telepítése nem sikerült.{suffix}"
+                    del self.registered_hotkeys[action]
+                    self.hotkey_pressed_states.pop(action, None)
+            self.registered_hotkey_primary_keys = {key for _modifiers, key in self.registered_hotkeys.values()}
+            self.mouse_hook_handle = None
+            self.mouse_hook_callback = None
+
+    def _uninstall_mouse_hook(self) -> None:
+        if sys.platform != "win32":
+            return
+
+        if self.mouse_hook_handle is not None:
+            user32.UnhookWindowsHookEx(self.mouse_hook_handle)
+            self.mouse_hook_handle = None
+
+        self.mouse_hook_callback = None
+        self.mouse_recording_buttons.clear()
+
+    def _mouse_hook_proc(self, n_code: int, w_param, l_param):
+        message = int(w_param)
+        if n_code != HC_ACTION or message not in (WM_XBUTTONDOWN, WM_XBUTTONUP):
+            return user32.CallNextHookEx(self.mouse_hook_handle, n_code, w_param, l_param)
+
+        mouse_data = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+        if mouse_data.flags & LLMHF_INJECTED:
+            return user32.CallNextHookEx(self.mouse_hook_handle, n_code, w_param, l_param)
+
+        button = (int(mouse_data.mouseData) >> 16) & 0xFFFF
+        vk_code = {1: 0x05, 2: 0x06}.get(button)
+        if vk_code is None:
+            return user32.CallNextHookEx(self.mouse_hook_handle, n_code, w_param, l_param)
+
+        if message == WM_XBUTTONUP:
+            if vk_code in self.mouse_recording_buttons:
+                self.mouse_recording_buttons.discard(vk_code)
+                QTimer.singleShot(0, self._update_keyboard_hook_state)
+                return 1
+            if self._handle_hotkey_keyup(vk_code):
+                return 1
+        else:
+            editor = active_hotkey_editor()
+            if editor is not None:
+                # Rögzítés közben nem indítunk fordítást és nem navigálunk
+                # vissza/előre. A felirat frissítése már az eseményhurok dolga.
+                if vk_code not in self.mouse_recording_buttons:
+                    self.mouse_recording_buttons.add(vk_code)
+                    modifiers = current_hotkey_modifiers()
+                    QTimer.singleShot(0, lambda: editor.record_mouse_button(vk_code, modifiers))
+                return 1
+            if self._handle_hotkey_keydown(vk_code):
+                return 1
+
+        return user32.CallNextHookEx(self.mouse_hook_handle, n_code, w_param, l_param)
+
     def _keyboard_hook_proc(self, n_code: int, w_param, l_param):
         if n_code != HC_ACTION or not self.registered_hotkeys:
             return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
@@ -3049,18 +3070,35 @@ class MainWindow(QMainWindow):
         if key_data.flags & LLKHF_INJECTED:
             return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
 
-        if vk_code not in self.registered_hotkey_primary_keys:
+        if message in (WM_KEYUP, WM_SYSKEYUP) and vk_code in self.registered_hotkey_primary_keys:
+            if self._handle_hotkey_keyup(vk_code):
+                return 1
+
+        if active_hotkey_editor() is not None:
+            # A rögzítés nem folytathat egy korábban megszakított kivágást;
+            # az itt lenyomott Esc/Win+Shift+S se hagyhasson küldési engedélyt.
+            self._clear_screen_clip_hotkey_arm()
             return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
 
-        if message in (WM_KEYDOWN, WM_SYSKEYDOWN) and self._handle_hotkey_keydown(vk_code):
-            return 1
+        if message in (WM_KEYDOWN, WM_SYSKEYDOWN):
+            if vk_code in self.registered_hotkey_primary_keys and self._handle_hotkey_keydown(vk_code):
+                return 1
 
-        if message in (WM_KEYUP, WM_SYSKEYUP) and self._handle_hotkey_keyup(vk_code):
-            return 1
+            # Az Esc megszakítja a saját kivágást. A külön indított Windows
+            # képkivágás sem használhat fel egy korábbról megmaradt engedélyt.
+            # Ezeket a billentyűket továbbengedjük a Windowsnak.
+            if vk_code == 0x1B or (vk_code == ord("S") and self._current_modifiers_match(MOD_WIN | MOD_SHIFT)):
+                self._clear_screen_clip_hotkey_arm()
 
         return user32.CallNextHookEx(self.keyboard_hook_handle, n_code, w_param, l_param)
 
     def _handle_hotkey_keydown(self, vk_code: int) -> bool:
+        # Ugyanaz a lenyomva tartott főgomb módosítóváltáskor sem indíthat
+        # egy másik, ugyanarra a gombra beállított műveletet.
+        if any(key == vk_code and self.hotkey_pressed_states.get(action, False)
+               for action, (_modifiers, key) in self.registered_hotkeys.items()):
+            return True
+
         for action, (hotkey_modifiers, hotkey_key) in self.registered_hotkeys.items():
             if hotkey_key != vk_code:
                 continue
@@ -3088,6 +3126,9 @@ class MainWindow(QMainWindow):
         return False
 
     def _trigger_hotkey_action(self, action: str) -> None:
+        if active_hotkey_editor() is not None:
+            return
+
         if action == "type_out":
             self._trigger_type_out_hotkey()
             return
@@ -3104,17 +3145,7 @@ class MainWindow(QMainWindow):
         if sys.platform != "win32":
             return False
 
-        ctrl_down = bool(user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
-        alt_down = bool(user32.GetAsyncKeyState(VK_MENU) & 0x8000)
-        shift_down = bool(user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
-        win_down = bool((user32.GetAsyncKeyState(VK_LWIN) | user32.GetAsyncKeyState(VK_RWIN)) & 0x8000)
-
-        return (
-            ctrl_down == bool(modifiers & MOD_CONTROL)
-            and alt_down == bool(modifiers & MOD_ALT)
-            and shift_down == bool(modifiers & MOD_SHIFT)
-            and win_down == bool(modifiers & MOD_WIN)
-        )
+        return current_hotkey_modifiers() == modifiers
 
     def _hotkey_status_message(self, prefix: str) -> str:
         if not self.hotkey_errors:
@@ -3138,7 +3169,7 @@ class MainWindow(QMainWindow):
             self._set_live_status("A begépeléshez nem azonosítható aktív ablak.")
             return
         if self._wait_for_modifier_release() and self._type_cached_text_via_hotkey(target_window=target_window):
-            self._set_live_status(f"A mentett fordítás begépelve: {self.settings.type_out_hotkey}")
+            self._set_live_status(f"A mentett fordítás begépelve: {format_hotkey_definition(self.settings.type_out_hotkey)}")
 
     def _trigger_screen_clip_hotkey(self) -> None:
         if self.hotkey_errors.get("screen_clip"):
@@ -3149,11 +3180,17 @@ class MainWindow(QMainWindow):
             self._set_live_status("A képkivágási gyorsbillentyű csak Windowson érhető el.")
             return
 
+        self.settings = self._read_settings_from_form()
+        if not self.settings.monitoring_enabled or not self.settings.screen_clip_hotkey_enabled:
+            self._clear_screen_clip_hotkey_arm()
+            self._set_live_status("A program vagy a képkivágási gyorsbillentyű ki van kapcsolva.")
+            return
+
         self._arm_screen_clip_hotkey()
 
         try:
             os.startfile("ms-screenclip:")
-            self._set_live_status(f"A Windows képkivágó megnyitva: {self.settings.screen_clip_hotkey}")
+            self._set_live_status(f"A Windows képkivágó megnyitva: {format_hotkey_definition(self.settings.screen_clip_hotkey)}")
         except OSError as error:
             self._clear_screen_clip_hotkey_arm()
             self._set_live_status(f"A képkivágó nem indítható el: {error}")
@@ -3176,7 +3213,7 @@ class MainWindow(QMainWindow):
         self._hide_translation_overlay()
         self._wait_for_modifier_release()
         self.quick_chat_overlay.show_overlay()
-        self._set_live_status(f"A gyors chat overlay megnyitva: {self.settings.quick_chat_hotkey}")
+        self._set_live_status(f"A gyors chat overlay megnyitva: {format_hotkey_definition(self.settings.quick_chat_hotkey)}")
 
     def _wait_for_modifier_release(self) -> bool:
         if sys.platform != "win32":
