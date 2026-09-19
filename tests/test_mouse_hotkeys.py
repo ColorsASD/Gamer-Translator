@@ -334,14 +334,65 @@ class MouseHotkeyTests(unittest.TestCase):
         self.assertEqual(self.native.SetWindowsHookExW.call_count, 2)
         self.assertEqual(self.window.mouse_hook_handle, 999)
 
-    def test_keyboard_only_bindings_still_install_mouse_hook_for_recording(self):
+    def test_keyboard_only_bindings_do_not_install_mouse_hook_without_recorder(self):
         self.window = hotkey_window({"screen_clip": (module.MOD_ALT, ord("C"))})
         self.window.mouse_hook_handle = None
+        self.native.SetWindowsHookExW.return_value = 888
+        self.window._update_keyboard_hook_state()
+        self.native.SetWindowsHookExW.assert_not_called()
+        self.assertIsNone(self.window.mouse_hook_handle)
+
+    def test_failed_keyboard_hook_does_not_install_mouse_hook_for_removed_bindings(self):
+        self.window.keyboard_hook_handle = None
+        self.window.keyboard_hook_callback = None
+        self.window.mouse_hook_handle = None
+        self.window.mouse_hook_callback = None
+        self.native.SetWindowsHookExW.side_effect = [0, 999]
+        self.window._update_keyboard_hook_state()
+        self.native.SetWindowsHookExW.assert_called_once()
+        self.assertEqual(self.native.SetWindowsHookExW.call_args.args[0], module.WH_KEYBOARD_LL)
+        self.assertEqual(self.window.registered_hotkeys, {})
+        self.assertEqual(set(self.window.hotkey_errors), {"screen_clip"})
+        self.assertIsNone(self.window.keyboard_hook_handle)
+        self.assertIsNone(self.window.mouse_hook_handle)
+        self.assertIsNone(self.window.mouse_hook_callback)
+
+    def test_keyboard_only_bindings_install_mouse_hook_when_recorder_has_focus(self):
+        self.window = hotkey_window({"screen_clip": (module.MOD_ALT, ord("C"))})
+        self.window.hotkey_system_integration_enabled = True
+        self.window.mouse_hook_handle = None
+        self.editor.return_value = Mock()
         self.native.SetWindowsHookExW.return_value = 888
         self.window._update_keyboard_hook_state()
         self.native.SetWindowsHookExW.assert_called_once()
         self.assertEqual(self.native.SetWindowsHookExW.call_args.args[0], module.WH_MOUSE_LL)
         self.assertEqual(self.window.mouse_hook_handle, 888)
+
+    def test_recorder_focus_loss_removes_unneeded_mouse_hook_with_keyboard_bindings(self):
+        self.window = hotkey_window({"screen_clip": (module.MOD_ALT, ord("C"))})
+        self.window.hotkey_system_integration_enabled = True
+        self.window._update_keyboard_hook_state()
+        self.native.UnhookWindowsHookEx.assert_called_once_with(456)
+        self.assertIsNone(self.window.mouse_hook_handle)
+        self.assertEqual(self.window.keyboard_hook_handle, 123)
+
+    def test_mouse_binding_keeps_hook_after_recorder_focus_loss(self):
+        self.window._update_keyboard_hook_state()
+        self.native.UnhookWindowsHookEx.assert_not_called()
+        self.assertEqual(self.window.mouse_hook_handle, 456)
+
+    def test_removed_mouse_binding_keeps_hook_until_release_with_keyboard_binding(self):
+        self.assertEqual(self.mouse_event(), 1)
+        self.single_shot.reset_mock()
+        self.window.registered_hotkeys = {"type_out": (module.MOD_ALT, ord("V"))}
+        self.window._update_keyboard_hook_state()
+        self.assertEqual(self.window.mouse_hook_handle, 456)
+        self.assertEqual(self.mouse_event(message=module.WM_XBUTTONUP), 1)
+        self.run_queued_actions()
+        self.native.UnhookWindowsHookEx.assert_called_once_with(456)
+        self.assertIsNone(self.window.mouse_hook_handle)
+        self.assertEqual(self.window.keyboard_hook_handle, 123)
+        self.assertEqual(self.window.suppressed_hotkey_presses, {})
 
     def test_recording_installs_mouse_hook_even_with_all_actions_disabled(self):
         self.window = hotkey_window({})

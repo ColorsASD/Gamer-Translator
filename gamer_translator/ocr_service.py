@@ -16,6 +16,7 @@ from statistics import mean, median
 from typing import Iterable
 from urllib.parse import urlparse
 
+import cv2
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
 from rapidocr.inference_engine.base import FileInfo, InferSession
@@ -237,9 +238,15 @@ class OCRService:
 
         self._ensure_assets()
         det_asset, cls_asset, rec_asset = self._required_assets()
+        # Az OCR már alacsony prioritású háttérszálon fut. A natív motorok
+        # saját szálkészletei ezt megkerülnék, és a játék CPU-idejét használnák.
+        # Egy szállal a számítás is a hívó háttérszálon marad.
+        cv2.setNumThreads(1)
         self.engine = RapidOCR(
             params={
                 "Global.log_level": "ERROR",
+                "EngineConfig.onnxruntime.intra_op_num_threads": 1,
+                "EngineConfig.onnxruntime.inter_op_num_threads": 1,
                 "Det.engine_type": EngineType.ONNXRUNTIME,
                 "Det.lang_type": LangDet.MULTI,
                 "Det.model_type": ModelType.MOBILE,

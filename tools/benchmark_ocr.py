@@ -11,6 +11,7 @@ import hashlib
 from importlib.metadata import PackageNotFoundError, version
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -101,6 +102,20 @@ class BenchmarkService(TracingMixin, OCRService):
     pass
 
 
+def process_cpu_metrics(cpu_seconds: float, elapsed_seconds: float, logical_cpu_count: int | None) -> dict:
+    """A saját folyamat CPU-ideje, átlagos maghasználata és gépkapacitás-aránya.
+
+    A CPU-idő a folyamat összes szálát méri; más folyamatok terhelését nem.
+    Egy átlagosan teljesen elfoglalt logikai mag értéke 1,0 mag.
+    """
+    average_cores = cpu_seconds / elapsed_seconds if elapsed_seconds > 0 else 0.0
+    return {
+        "process_cpu_seconds": round(cpu_seconds, 3),
+        "average_process_cpu_cores": round(average_cores, 3),
+        "average_process_machine_cpu_percent": round(average_cores / logical_cpu_count * 100, 3) if logical_cpu_count else None,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", type=Path, required=True)
@@ -135,9 +150,12 @@ def main():
             versions[package] = version(package)
         except PackageNotFoundError:
             continue
+    logical_cpu_count = os.cpu_count()
     report = {"python": sys.version, "versions": versions, "windows_languages": service.windows_language_tags, "candidate_count": args.candidate_count,
+              "machine_logical_cpu_count": logical_cpu_count,
               "ocr_source_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(), "samples": []}
     started_at = time.monotonic()
+    cpu_started_at = time.process_time()
     for name, text, font_name, size, dark in SAMPLES:
         if args.sample and name not in args.sample:
             continue
@@ -149,24 +167,31 @@ def main():
         image.save(image_path)
         service.trace = []
         sample_started = time.monotonic()
+        sample_cpu_started = time.process_time()
         candidates = service._collect_ranked_candidates(image_path.read_bytes(), minimum_candidate_count=args.candidate_count)
         selected = service._select_unique_candidates(candidates, args.candidate_count)
         actual = selected[0].text if selected else ""
+        sample_cpu_seconds = time.process_time() - sample_cpu_started
+        sample_elapsed_seconds = time.monotonic() - sample_started
         sample = {
             "name": name, "expected": text, "actual": actual, "font": font_name, "font_size": size, "dark": dark,
             "exact": actual == text,
             "character_errors": character_distance(unicodedata.normalize("NFC", text), unicodedata.normalize("NFC", actual)),
             "expected_characters": len(text), "expected_in_candidates": any(candidate.text == text for candidate in selected),
-            "seconds": round(time.monotonic() - sample_started, 3),
+            "seconds": round(sample_elapsed_seconds, 3),
+            **process_cpu_metrics(sample_cpu_seconds, sample_elapsed_seconds, logical_cpu_count),
             "candidates": [asdict(candidate) for candidate in selected], "trace": service.trace,
         }
         report["samples"].append(sample)
-        print(json.dumps({key: sample[key] for key in ("name", "actual", "exact", "character_errors", "seconds")}, ensure_ascii=True), flush=True)
+        print(json.dumps({key: sample[key] for key in ("name", "actual", "exact", "character_errors", "seconds", "process_cpu_seconds", "average_process_cpu_cores", "average_process_machine_cpu_percent")}, ensure_ascii=True), flush=True)
+        total_cpu_seconds = time.process_time() - cpu_started_at
+        total_elapsed_seconds = time.monotonic() - started_at
         report["summary"] = {
             "samples": len(report["samples"]), "exact": sum(item["exact"] for item in report["samples"]),
             "character_errors": sum(item["character_errors"] for item in report["samples"]),
             "expected_characters": sum(item["expected_characters"] for item in report["samples"]),
-            "seconds": round(time.monotonic() - started_at, 3),
+            "seconds": round(total_elapsed_seconds, 3),
+            **process_cpu_metrics(total_cpu_seconds, total_elapsed_seconds, logical_cpu_count),
         }
         args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report["summary"], ensure_ascii=True), flush=True)

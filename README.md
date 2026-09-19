@@ -96,6 +96,8 @@ A `-SkipDependencyInstall` kapcsolót csak előzetesen telepített és ellenőrz
 ## Fontos beállítások
 
 - a `Szöveg kiolvasása képről` beállítás alapból aktív
+- az OCR alacsony prioritású háttérszálon fut, a RapidOCR és az OpenCV számításai egy szálra korlátozottak, hogy kevesebb processzoridőt vegyenek el a játéktól
+- az OCR-re várakozás közben a program folyamatosan kezeli a bemeneti eseményeket; globális egérfigyelést csak Mouse 4–5 gyorsgomb használatakor vagy gyorsgomb rögzítése közben tart fenn
 - az automatikus képfordítás csak a saját képkivágási gyorsbillentyűhöz tartozik; az `Esc` megszakítja a várakozást, a következő kivágásra legfeljebb 45 másodperc áll rendelkezésre
 - ha a GPU gyorsítás állapota megváltozik és elmented a beállításokat, a program automatikusan újraindul
 
@@ -138,6 +140,7 @@ A `--staging` kapcsoló ideiglenes profillal nyitja meg az élő ChatGPT-t, kika
 - [Változtatások leírása](docs/changes.md)
 - [Telepítési útmutató](docs/deployment.md)
 - [Tesztelési jelentés](docs/test-report.md)
+- [OCR teljesítmény és bemenetkezelés](docs/ocr-performance.md)
 - [Biztonsági audit](docs/security-audit.md)
 - [Kódaláírás és Windows biztonsági ellenőrzés](docs/followup-security.md)
 

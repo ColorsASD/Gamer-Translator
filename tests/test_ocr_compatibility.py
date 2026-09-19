@@ -6,11 +6,17 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+import cv2
+from onnxruntime import ExecutionMode
+from rapidocr import RapidOCR
+from rapidocr.inference_engine.onnxruntime.main import OrtInferSession
+
 from gamer_translator.ocr_service import OCRService
 
 
 class OCRCompatibilityTests(unittest.TestCase):
     def setUp(self):
+        self.addCleanup(cv2.setNumThreads, cv2.getNumThreads())
         self.temporary_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_dir.cleanup)
         with patch.object(OCRService, "_resolve_windows_language_tags", return_value=()):
@@ -46,6 +52,18 @@ class OCRCompatibilityTests(unittest.TestCase):
         with patch.object(self.service, "_ensure_assets") as ensure_assets:
             self.assertIs(self.service._get_engine(), existing_engine)
         ensure_assets.assert_not_called()
+
+    def test_native_runtime_limits_survive_rapidocr_configuration(self):
+        # A csomag valódi konfigurációfeldolgozása és ONNX-beállításai futnak;
+        # csak a modellek megnyitását hagyjuk ki az offline próbából.
+        with patch.object(self.service, "_ensure_assets"), patch.object(RapidOCR, "_initialize") as initialize:
+            self.service._get_engine()
+        config = initialize.call_args.args[0]
+        options = OrtInferSession._init_sess_opts(config.EngineConfig.onnxruntime)
+        self.assertEqual(options.intra_op_num_threads, 1)
+        self.assertEqual(options.inter_op_num_threads, 1)
+        self.assertEqual(options.execution_mode, ExecutionMode.ORT_SEQUENTIAL)
+        self.assertEqual(cv2.getNumThreads(), 1)
 
 
 if __name__ == "__main__":

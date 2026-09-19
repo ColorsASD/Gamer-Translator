@@ -1,0 +1,514 @@
+{
+  "measured_at": "2026-09-19T22:57:36.208868+00:00",
+  "baseline_commit": "72835b8e8a80869c802f6fa602e947ada42e4acc",
+  "machine_logical_cpu_count": 12,
+  "python": "3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]",
+  "versions": {
+    "rapidocr": "3.9.2",
+    "onnxruntime": "1.29.0",
+    "Pillow": "12.3.0",
+    "wordfreq": "3.1.1",
+    "winrt-runtime": "3.2.1"
+  },
+  "windows_languages": [
+    "hu-HU",
+    "en-US"
+  ],
+  "candidate_count": 5,
+  "source_sha256": {
+    "before": "2ad22bc2c9520f84adf0e90052bde76937fec3361111fe8d1a024a6209722e80",
+    "after": "639b709ddc42ec349d81c84a703d08b84b47717add25355758fd26921c60c92d"
+  },
+  "before": {
+    "samples": 19,
+    "exact": 15,
+    "character_errors": 5,
+    "expected_characters": 628,
+    "seconds": 99.671,
+    "process_cpu_seconds": 443.344,
+    "average_process_cpu_cores": 4.448,
+    "average_process_machine_cpu_percent": 37.067
+  },
+  "after": {
+    "samples": 19,
+    "exact": 15,
+    "character_errors": 5,
+    "expected_characters": 628,
+    "seconds": 124.463,
+    "process_cpu_seconds": 115.484,
+    "average_process_cpu_cores": 0.928,
+    "average_process_machine_cpu_percent": 7.732
+  },
+  "all_top_texts_identical": true,
+  "all_selected_texts_identical": true,
+  "cpu_time_reduction_percent": 73.95,
+  "average_load_reduction_percent": 79.14,
+  "elapsed_increase_percent": 24.87,
+  "limitations": [
+    "Egy sorrendi előtte-utána futás 19 generált képen, nem játékbeli FPS- vagy fizikai egérkésleltetés-mérés.",
+    "A CPU-idő csak a benchmark folyamatot méri, nem a teljes gépet vagy a WebEngine folyamatait.",
+    "A benchmark közvetlenül az OCRService-t hívja; a GUI eseménykezelését külön regressziók ellenőrzik. A Windows háttérprioritásának hatásáról nincs külön teljesítménymérés."
+  ],
+  "samples": [
+    {
+      "name": "hu_diagnostic",
+      "expected": "Árvíztűrő tükörfúrógép",
+      "before_text": "Árvíztúrő tükörfúrógép",
+      "after_text": "Árvíztúrő tükörfúrógép",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 11.532,
+        "process_cpu_seconds": 41.969,
+        "average_process_cpu_cores": 3.639,
+        "average_process_machine_cpu_percent": 30.327
+      },
+      "after": {
+        "seconds": 12.663,
+        "process_cpu_seconds": 11.125,
+        "average_process_cpu_cores": 0.879,
+        "average_process_machine_cpu_percent": 7.321
+      }
+    },
+    {
+      "name": "hu_round",
+      "expected": "Kérlek, gyere vissza a következő körre!",
+      "before_text": "Kérlek, gyere vissza a következő körre!",
+      "after_text": "Kérlek, gyere vissza a következő körre!",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 7.904,
+        "process_cpu_seconds": 33.281,
+        "average_process_cpu_cores": 4.211,
+        "average_process_machine_cpu_percent": 35.091
+      },
+      "after": {
+        "seconds": 8.276,
+        "process_cpu_seconds": 7.484,
+        "average_process_cpu_cores": 0.904,
+        "average_process_machine_cpu_percent": 7.537
+      }
+    },
+    {
+      "name": "hu_quest",
+      "expected": "Ősszel új küldetések és erős ellenfelek várnak.",
+      "before_text": "Ősszel új küldetések és erős ellenfelek várnak.",
+      "after_text": "Ősszel új küldetések és erős ellenfelek várnak.",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 7.344,
+        "process_cpu_seconds": 31.594,
+        "average_process_cpu_cores": 4.302,
+        "average_process_machine_cpu_percent": 35.851
+      },
+      "after": {
+        "seconds": 8.067,
+        "process_cpu_seconds": 7.453,
+        "average_process_cpu_cores": 0.924,
+        "average_process_machine_cpu_percent": 7.699
+      }
+    },
+    {
+      "name": "hu_meeting",
+      "expected": "Tíz perc múlva találkozunk a főtéren.",
+      "before_text": "Tíz perc múlva találkozunk a főtéren.",
+      "after_text": "Tíz perc múlva találkozunk a főtéren.",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 3.075,
+        "process_cpu_seconds": 14.078,
+        "average_process_cpu_cores": 4.578,
+        "average_process_machine_cpu_percent": 38.154
+      },
+      "after": {
+        "seconds": 3.994,
+        "process_cpu_seconds": 3.625,
+        "average_process_cpu_cores": 0.908,
+        "average_process_machine_cpu_percent": 7.563
+      }
+    },
+    {
+      "name": "en_hello",
+      "expected": "Hello gamer",
+      "before_text": "Hello gamer",
+      "after_text": "Hello gamer",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 4.853,
+        "process_cpu_seconds": 25.438,
+        "average_process_cpu_cores": 5.241,
+        "average_process_machine_cpu_percent": 43.677
+      },
+      "after": {
+        "seconds": 6.108,
+        "process_cpu_seconds": 5.719,
+        "average_process_cpu_cores": 0.936,
+        "average_process_machine_cpu_percent": 7.802
+      }
+    },
+    {
+      "name": "en_round",
+      "expected": "Please wait for the next round.",
+      "before_text": "Please wait for the next round.",
+      "after_text": "Please wait for the next round.",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 5.795,
+        "process_cpu_seconds": 24.141,
+        "average_process_cpu_cores": 4.166,
+        "average_process_machine_cpu_percent": 34.713
+      },
+      "after": {
+        "seconds": 6.071,
+        "process_cpu_seconds": 5.578,
+        "average_process_cpu_cores": 0.919,
+        "average_process_machine_cpu_percent": 7.657
+      }
+    },
+    {
+      "name": "en_shield",
+      "expected": "Keep your shield up and follow me!",
+      "before_text": "Keep your shield up and follow me!",
+      "after_text": "Keep your shield up and follow me!",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 6.02,
+        "process_cpu_seconds": 26.922,
+        "average_process_cpu_cores": 4.472,
+        "average_process_machine_cpu_percent": 37.27
+      },
+      "after": {
+        "seconds": 7.52,
+        "process_cpu_seconds": 6.812,
+        "average_process_cpu_cores": 0.906,
+        "average_process_machine_cpu_percent": 7.55
+      }
+    },
+    {
+      "name": "en_healer",
+      "expected": "Don't push alone, we need a healer.",
+      "before_text": "Don't push alone, we need a healer.",
+      "after_text": "Don't push alone, we need a healer.",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 6.83,
+        "process_cpu_seconds": 29.359,
+        "average_process_cpu_cores": 4.299,
+        "average_process_machine_cpu_percent": 35.821
+      },
+      "after": {
+        "seconds": 7.997,
+        "process_cpu_seconds": 7.656,
+        "average_process_cpu_cores": 0.957,
+        "average_process_machine_cpu_percent": 7.978
+      }
+    },
+    {
+      "name": "hu_ammo",
+      "expected": "Küldj egy TP-t, elfogyott a lőszerem!",
+      "before_text": "Küldj egy TP-t, elfogyott a lőszerem!",
+      "after_text": "Küldj egy TP-t, elfogyott a lőszerem!",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 3.745,
+        "process_cpu_seconds": 16.984,
+        "average_process_cpu_cores": 4.535,
+        "average_process_machine_cpu_percent": 37.789
+      },
+      "after": {
+        "seconds": 4.97,
+        "process_cpu_seconds": 4.766,
+        "average_process_cpu_cores": 0.959,
+        "average_process_machine_cpu_percent": 7.991
+      }
+    },
+    {
+      "name": "commands",
+      "expected": "/spawn /home base /tp Player_42",
+      "before_text": "/spawn / home base /tp Player_42",
+      "after_text": "/spawn / home base /tp Player_42",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 3.184,
+        "process_cpu_seconds": 14.625,
+        "average_process_cpu_cores": 4.594,
+        "average_process_machine_cpu_percent": 38.282
+      },
+      "after": {
+        "seconds": 4.286,
+        "process_cpu_seconds": 3.938,
+        "average_process_cpu_cores": 0.919,
+        "average_process_machine_cpu_percent": 7.656
+      }
+    },
+    {
+      "name": "hu_party",
+      "expected": "[Party] Árpi: jövök, várjatok még 2 percet!",
+      "before_text": "[Party] Árpi: jövök, várjatok még 2 percet!",
+      "after_text": "[Party] Árpi: jövök, várjatok még 2 percet!",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 1.762,
+        "process_cpu_seconds": 8.875,
+        "average_process_cpu_cores": 5.037,
+        "average_process_machine_cpu_percent": 41.978
+      },
+      "after": {
+        "seconds": 2.662,
+        "process_cpu_seconds": 2.531,
+        "average_process_cpu_cores": 0.951,
+        "average_process_machine_cpu_percent": 7.925
+      }
+    },
+    {
+      "name": "en_gamer",
+      "expected": "gg wp! Heal me at 20 HP, then rush B.",
+      "before_text": "gg wp! Heal me at 20 HP, then rush B.",
+      "after_text": "gg wp! Heal me at 20 HP, then rush B.",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 2.773,
+        "process_cpu_seconds": 13.656,
+        "average_process_cpu_cores": 4.925,
+        "average_process_machine_cpu_percent": 41.04
+      },
+      "after": {
+        "seconds": 4.462,
+        "process_cpu_seconds": 4.094,
+        "average_process_cpu_cores": 0.918,
+        "average_process_machine_cpu_percent": 7.646
+      }
+    },
+    {
+      "name": "hu_accents",
+      "expected": "Ági írja: hűvös idő, sűrű köd, őrült szél.",
+      "before_text": "Ági írja: hűvös idő, sűrű köd, őrült szél.",
+      "after_text": "Ági írja: hűvös idő, sűrű köd, őrült szél.",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 3.236,
+        "process_cpu_seconds": 15.25,
+        "average_process_cpu_cores": 4.713,
+        "average_process_machine_cpu_percent": 39.276
+      },
+      "after": {
+        "seconds": 5.136,
+        "process_cpu_seconds": 4.672,
+        "average_process_cpu_cores": 0.91,
+        "average_process_machine_cpu_percent": 7.581
+      }
+    },
+    {
+      "name": "holdout_names",
+      "expected": "Dóri és Bence később érkeznek.",
+      "before_text": "Dóri és Bence később érkeznek.",
+      "after_text": "Dóri és Bence később érkeznek.",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 4.575,
+        "process_cpu_seconds": 20.531,
+        "average_process_cpu_cores": 4.488,
+        "average_process_machine_cpu_percent": 37.399
+      },
+      "after": {
+        "seconds": 6.003,
+        "process_cpu_seconds": 5.672,
+        "average_process_cpu_cores": 0.945,
+        "average_process_machine_cpu_percent": 7.873
+      }
+    },
+    {
+      "name": "holdout_flag",
+      "expected": "Ő már a piros zászlónál vár.",
+      "before_text": "Ó már a piros zászlónál vár.",
+      "after_text": "Ó már a piros zászlónál vár.",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 2.209,
+        "process_cpu_seconds": 10.688,
+        "average_process_cpu_cores": 4.837,
+        "average_process_machine_cpu_percent": 40.312
+      },
+      "after": {
+        "seconds": 2.618,
+        "process_cpu_seconds": 2.531,
+        "average_process_cpu_cores": 0.967,
+        "average_process_machine_cpu_percent": 8.058
+      }
+    },
+    {
+      "name": "holdout_reload",
+      "expected": "Indulás előtt töltsd újra a fegyvert!",
+      "before_text": "Indulás előtt töltsd újra a fegyvert!",
+      "after_text": "Indulás előtt töltsd újra a fegyvert!",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 5.661,
+        "process_cpu_seconds": 27.125,
+        "average_process_cpu_cores": 4.792,
+        "average_process_machine_cpu_percent": 39.932
+      },
+      "after": {
+        "seconds": 6.968,
+        "process_cpu_seconds": 6.672,
+        "average_process_cpu_cores": 0.958,
+        "average_process_machine_cpu_percent": 7.979
+      }
+    },
+    {
+      "name": "holdout_checkpoint",
+      "expected": "Meet at checkpoint C in 15 seconds.",
+      "before_text": "Meet at checkpoint C in 15 seconds.",
+      "after_text": "Meet at checkpoint C in 15 seconds.",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 7.184,
+        "process_cpu_seconds": 33.266,
+        "average_process_cpu_cores": 4.63,
+        "average_process_machine_cpu_percent": 38.587
+      },
+      "after": {
+        "seconds": 9.151,
+        "process_cpu_seconds": 8.906,
+        "average_process_cpu_cores": 0.973,
+        "average_process_machine_cpu_percent": 8.11
+      }
+    },
+    {
+      "name": "holdout_score",
+      "expected": "We won 3-2, good game!",
+      "before_text": "We won 3-2, good game!",
+      "after_text": "We won 3-2, good game!",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 6.303,
+        "process_cpu_seconds": 30.422,
+        "average_process_cpu_cores": 4.826,
+        "average_process_machine_cpu_percent": 40.219
+      },
+      "after": {
+        "seconds": 8.177,
+        "process_cpu_seconds": 7.969,
+        "average_process_cpu_cores": 0.974,
+        "average_process_machine_cpu_percent": 8.121
+      }
+    },
+    {
+      "name": "holdout_commands",
+      "expected": "/warp shop /msg Player_7 hello",
+      "before_text": "/warp shop /msg Player _ 7 hello",
+      "after_text": "/warp shop /msg Player _ 7 hello",
+      "selected_texts_identical": true,
+      "before": {
+        "seconds": 5.42,
+        "process_cpu_seconds": 24.125,
+        "average_process_cpu_cores": 4.451,
+        "average_process_machine_cpu_percent": 37.09
+      },
+      "after": {
+        "seconds": 9.182,
+        "process_cpu_seconds": 8.172,
+        "average_process_cpu_cores": 0.89,
+        "average_process_machine_cpu_percent": 7.417
+      }
+    }
+  ],
+  "verified_native_runtime": {
+    "opencv_threads": 1,
+    "onnx_sessions": {
+      "text_det": {
+        "intra_op_num_threads": 1,
+        "inter_op_num_threads": 1,
+        "execution_mode": "ExecutionMode.ORT_SEQUENTIAL",
+        "providers": [
+          "CPUExecutionProvider"
+        ]
+      },
+      "text_cls": {
+        "intra_op_num_threads": 1,
+        "inter_op_num_threads": 1,
+        "execution_mode": "ExecutionMode.ORT_SEQUENTIAL",
+        "providers": [
+          "CPUExecutionProvider"
+        ]
+      },
+      "text_rec": {
+        "intra_op_num_threads": 1,
+        "inter_op_num_threads": 1,
+        "execution_mode": "ExecutionMode.ORT_SEQUENTIAL",
+        "providers": [
+          "CPUExecutionProvider"
+        ]
+      }
+    }
+  },
+  "validation": {
+    "python_tests_passed": 198,
+    "javascript_tests_passed": 13,
+    "build": {
+      "path": "dist/staging/ocr-performance/Gamer Translator.exe",
+      "bytes": 381513332,
+      "sha256": "728c0ab42ac9bf5e33639069037f0324e6db05c39b762e424c12d192db28a2da",
+      "checks": {
+        "source:main.py": true,
+        "source:gamer_translator/defaults.py": true,
+        "source:gamer_translator/hotkeys.py": true,
+        "source:gamer_translator/main_window.py": true,
+        "source:gamer_translator/ocr_service.py": true,
+        "source:gamer_translator/self_test.py": true,
+        "source:gamer_translator/settings_store.py": true,
+        "asset:gamer_translator/automation.js": true,
+        "asset:gamer_translator/assets/icon-128.png": true,
+        "runtime:QtWebEngineProcess.exe": true,
+        "runtime:Qt6WebEngineCore.dll": true,
+        "runtime:qtwebengine_resources.pak": true,
+        "runtime:icudtl.dat": true,
+        "runtime:qwindows.dll": true,
+        "runtime:onnxruntime_pybind11_state.pyd": true,
+        "runtime:Windows OCR": true,
+        "runtime:WinRT runtime": true,
+        "runtime:RapidOCR data": true,
+        "runtime:wordfreq Hungarian": true,
+        "runtime:wordfreq English": true,
+        "runtime:verified python3.dll": true,
+        "runtime:verified python313.dll": true,
+        "runtime:verified _ssl.pyd": true,
+        "runtime:verified libssl-3.dll": true,
+        "runtime:verified libcrypto-3.dll": true,
+        "runtime:verified PySide6/QtCore.pyd": true,
+        "runtime:verified PySide6/Qt6Core.dll": true,
+        "runtime:verified PySide6/pyside6.abi3.dll": true,
+        "runtime:verified shiboken6/Shiboken.pyd": true,
+        "runtime:verified shiboken6/shiboken6.abi3.dll": true,
+        "runtime:Windows ICU not bundled": true,
+        "runtime:Qt ICU exports available from Windows": true,
+        "PE:Windows x64 GUI": true
+      }
+    },
+    "frozen_self_test": {
+      "startedAt": "2026-09-19T23:03:25.563615+00:00",
+      "frozen": true,
+      "python": "3.13.15",
+      "openssl": "OpenSSL 3.0.21 9 Jun 2026",
+      "qt": "6.11.2",
+      "mode": "offline fixture; no live ChatGPT requests",
+      "checks": {
+        "window_and_webengine_start": true,
+        "isolated_profile_and_clipboard": true,
+        "repeated_quick_chat_response_storage_overlay_hide_show": true,
+        "clipboard_requires_screen_clip_hotkey": true,
+        "png_attachment_native_pipeline": true,
+        "no_network_requests_or_native_hotkeys": true,
+        "native_rapidocr_and_windows_inference": true,
+        "clean_window_shutdown": true
+      },
+      "cycles": 7,
+      "ocr": {
+        "expected": "Hello gamer",
+        "rapidocr": "Hello gamer",
+        "windows": "Hello gamer"
+      },
+      "elapsedSeconds": 10.72,
+      "passed": true
+    }
+  }
+}

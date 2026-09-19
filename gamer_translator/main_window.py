@@ -65,7 +65,7 @@ GAME_MODE_BACKGROUND_FRAME_INTERVAL_MS = 40
 IDLE_FRAME_INTERVAL_MS = 60
 BACKGROUND_IDLE_FRAME_INTERVAL_MS = 250
 SUSPENDED_FRAME_INTERVAL_MS = 1200
-BACKGROUND_TASK_EVENT_INTERVAL_SECONDS = 0.04
+BACKGROUND_TASK_EVENT_INTERVAL_MS = 40
 SCREEN_CLIP_ARM_TIMEOUT_SECONDS = 45.0
 AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS = 70000
 AUTOMATION_SCRIPT_VERSION = "2026-08-30-1"
@@ -2654,12 +2654,14 @@ class MainWindow(QMainWindow):
                     self._set_live_status("Háttérben futó feldolgozás befejezése kilépés előtt.")
                     last_status_update = time.monotonic()
 
-                QGuiApplication.processEvents()
-                time.sleep(BACKGROUND_TASK_EVENT_INTERVAL_SECONDS)
+                self._wait_with_events(BACKGROUND_TASK_EVENT_INTERVAL_MS)
 
         self.background_executor.shutdown(wait=True, cancel_futures=True)
 
     def _run_in_background_with_events(self, task: Callable[[], Any], *, progress_message: str | None = None) -> Any:
+        if self.current_background_future is not None and not self.current_background_future.done():
+            raise RuntimeError("Már fut egy háttérben végzett feldolgozás.")
+
         future = self.background_executor.submit(self._run_low_priority_background_task, task)
         self.current_background_future = future
         last_status_update = 0.0
@@ -2676,8 +2678,9 @@ class MainWindow(QMainWindow):
                     self._set_live_status(progress_message)
                     last_status_update = time.monotonic()
 
-                QGuiApplication.processEvents()
-                time.sleep(BACKGROUND_TASK_EVENT_INTERVAL_SECONDS)
+                # A GUI-szálon telepített natív hookok az eseményhurokban
+                # szolgálják ki a bemenetet. A sleep itt az egeret is megakasztaná.
+                self._wait_with_events(BACKGROUND_TASK_EVENT_INTERVAL_MS)
 
             return future.result()
         finally:
@@ -2966,7 +2969,8 @@ class MainWindow(QMainWindow):
             self._install_keyboard_hook()
         else:
             self._uninstall_keyboard_hook()
-        if (self.registered_hotkeys or pending_mouse
+        mouse_hotkeys = any(key in MOUSE_KEYCODES for _modifiers, key in self.registered_hotkeys.values())
+        if (mouse_hotkeys or pending_mouse
                 or self.hotkey_system_integration_enabled and (active_hotkey_editor() is not None or self.mouse_recording_buttons)):
             self._install_mouse_hook()
         else:
@@ -3153,7 +3157,7 @@ class MainWindow(QMainWindow):
             return False
         if action in self.hotkey_pressed_states:
             self.hotkey_pressed_states[action] = action in self.suppressed_hotkey_presses.values()
-        if not self.registered_hotkeys:
+        if vk_code in MOUSE_KEYCODES or not self.registered_hotkeys:
             QTimer.singleShot(0, self._update_keyboard_hook_state)
         return True
 
