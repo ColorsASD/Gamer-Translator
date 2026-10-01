@@ -25,6 +25,7 @@ A Gamer Translator egy önálló Windows asztali alkalmazás, amely a `chatgpt.c
 - egy példányos indítás, ahol a második megnyitás a meglévő ablakot aktiválja
 - állítható overlay láthatóság és megjelenési idő
 - a GPU gyorsítás módosítása mentés után automatikus újraindítással lép érvénybe
+- automatikus helyi esemény- és hibanaplózás, kérésenként követhető fordítási folyamattal
 
 ## Alap gyorsgombok
 
@@ -108,6 +109,20 @@ A `-SkipDependencyInstall` kapcsolót csak előzetesen telepített és ellenőrz
 - jobb kattintással `Eltüntetés` és `Kilépés` menü érhető el
 - eltüntetve vagy lekicsinyítve is tovább fut a fordítási folyamat
 - a programból egyszerre csak egy példány futtatható
+
+## Esemény- és hibanaplózás
+
+- a naplózás automatikusan aktív; a Beállítások `Naplómappa megnyitása` gombja nyitja meg a helyi naplókat
+- a naplók helye `%LOCALAPPDATA%\Gamer Translator\logs`, az aktuális fájl `gamer-translator.jsonl`
+- minden kérés saját azonosítót kap; a gyorsgomb, a kivágás, az OCR, a csatolás, a küldés, a válasz és a begépelés eseményei időrendben követhetők
+- 15 másodpercenként CPU-, memória- és eseményhurok-adatok is készülnek az alkalmazásról és a böngésző megjelenítő folyamatáról
+- a napló külön háttérszálon íródik, fájlonként legfeljebb 5 MiB és öt korábbi fájl megőrzésével
+- a fordítások, promptok, képek, OCR-szövegek, bejelentkezési adatok és teljes webcímek nem kerülnek a naplóba
+- az új kérés érvényteleníti a korábbi fordítást; a begépelési gyorsgomb a legutóbbi kérés elkészült szövegét használja
+- a képek legfeljebb négy várakozó elemet tartalmazó sorba kerülnek; megtelt sor esetén a program jelzi, hogy új kivágás szükséges
+- időtúllépés után legfeljebb két percig tovább figyeli a késői választ, az eredeti kéréshez kötve
+
+A részletes működés és a naplók olvasása a [debug rendszer leírásában](docs/debug-system.md) található.
 
 ## Megjegyzés
 

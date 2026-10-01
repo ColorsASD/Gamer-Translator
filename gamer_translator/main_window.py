@@ -46,6 +46,7 @@ from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngin
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from .defaults import APP_NAME, CHATGPT_HOSTS, CHATGPT_URL, DEFAULT_RESPONSE_TIMEOUT_MS, DEFAULT_SETTINGS, WINDOW_TITLE
+from .diagnostics import log_event, log_exception, resource_snapshot
 from .hotkeys import (
     HotkeyEdit,
     MOUSE_KEYCODES,
@@ -68,7 +69,7 @@ SUSPENDED_FRAME_INTERVAL_MS = 1200
 BACKGROUND_TASK_EVENT_INTERVAL_MS = 40
 SCREEN_CLIP_ARM_TIMEOUT_SECONDS = 45.0
 AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS = 70000
-AUTOMATION_SCRIPT_VERSION = "2026-08-30-1"
+AUTOMATION_SCRIPT_VERSION = "2026-10-01-1"
 INTERACTION_HEARTBEAT_INTERVAL_MS = 250
 INTERACTION_STALE_RESET_SECONDS = 8.0
 RESPONSE_FOLLOWUP_IDLE_TIMEOUT_SECONDS = 20.0
@@ -76,6 +77,7 @@ RESPONSE_FOLLOWUP_MAX_TIMEOUT_SECONDS = 120.0
 RESPONSE_FOLLOWUP_MAX_ERROR_COUNT = 5
 MAX_CLIPBOARD_IMAGE_PIXELS = 40_000_000
 MAX_CLIPBOARD_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_PENDING_CLIPBOARD_IMAGES = 4
 # Csak a saját begépelés kerülheti meg a gyorsgombszűrést; a külső
 # makrók/injektált események ugyanúgy kezelendők, mint a fizikai bevitel.
 OWN_INPUT_MARKER = uuid.uuid4().int & ((1 << (ctypes.sizeof(ctypes.c_void_p) * 8)) - 1)
@@ -401,8 +403,8 @@ class BrowserPage(QWebEnginePage):
         line_number: int,
         source_id: str,
     ) -> None:
-        if BROWSER_CONSOLE_DEBUG:
-            print(f"[browser:{level.name}] {source_id}:{line_number} {message}")
+        log_event("browser.console", level="ERROR" if "Error" in level.name else "WARNING" if "Warning" in level.name else "DEBUG",
+                  severity=level.name, text_length=len(message), line_number=line_number, source="webengine")
 
 
 class DrawerBackdrop(QWidget):
@@ -970,6 +972,11 @@ class MainWindow(QMainWindow):
         self.drawer_open = False
         self.drawer_width = 460
         self.last_translated_text = self.store.load_last_translated_text()
+        self.latest_translation_request_id = ""
+        self.translation_result_request_id = ""
+        self.active_translation_request_id = ""
+        self.pending_clipboard_payload_queue: list[dict[str, Any]] = []
+        self.pending_hotkey_actions: list[tuple[str, int]] = []
         self.registered_hotkeys: dict[str, tuple[int, int]] = {}
         self.hotkey_errors: dict[str, str] = {}
         self.hotkey_pressed_states: dict[str, bool] = {}
@@ -1046,6 +1053,17 @@ class MainWindow(QMainWindow):
         self.interaction_watchdog_timer.setInterval(1000)
         self.interaction_watchdog_timer.timeout.connect(self._recover_stuck_interaction_flags)
         self.interaction_watchdog_timer.start()
+        self.diagnostics_last_tick = time.monotonic()
+        self.diagnostics_timer = QTimer(self)
+        self.diagnostics_timer.setInterval(15000)
+        self.diagnostics_timer.timeout.connect(self._record_runtime_diagnostics)
+        self.diagnostics_timer.start()
+        log_event("window.created", monitoring_enabled=self.settings.monitoring_enabled,
+                  ocr_enabled=self.settings.ocr_text_from_clipboard_image,
+                  game_mode_enabled=self.settings.game_mode_enabled,
+                  gpu_enabled=self.settings.webview_gpu_acceleration_enabled,
+                  background=self.settings.keep_chatgpt_in_background,
+                  has_text=bool(self.last_translated_text))
 
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(1680, 980)
@@ -1064,12 +1082,15 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._refresh_system_keep_awake)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        log_event("window.close_requested", cancelled=not self.exit_requested)
         if not self.exit_requested and self.tray_icon is not None and self.tray_icon.isVisible():
             event.ignore()
             self._hide_to_tray(show_message=True)
             return
 
         self.hotkey_system_integration_enabled = False
+        if hasattr(self, "diagnostics_timer"):
+            self.diagnostics_timer.stop()
         self.store.save_settings(self._read_settings_from_form())
         self._unregister_hotkeys()
         self._uninstall_keyboard_hook()
@@ -1166,6 +1187,7 @@ class MainWindow(QMainWindow):
         self.browser_blur_effect: QGraphicsBlurEffect | None = None
         self.browser.loadStarted.connect(self._handle_load_started)
         self.browser.loadFinished.connect(self._handle_load_finished)
+        self.page.renderProcessTerminated.connect(lambda status, code: MainWindow._handle_renderer_terminated(self, status, code))
 
         browser_settings = self.browser.settings()
         self._set_web_attribute(browser_settings, "JavascriptEnabled", True)
@@ -1277,6 +1299,12 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self.last_run_label)
         status_layout.addWidget(QLabel("Futási információ:"))
         status_layout.addWidget(self.status_label)
+        self.open_logs_button = QPushButton("Naplómappa megnyitása")
+        self.open_logs_button.clicked.connect(self._open_log_directory)
+        status_layout.addWidget(self.open_logs_button)
+        log_hint = QLabel("Részletes helyi eseménynaplózás aktív. A szövegek és képek tartalma nem kerül a naplóba.")
+        log_hint.setWordWrap(True)
+        status_layout.addWidget(log_hint)
         status_group.setLayout(status_layout)
 
         drawer_buttons = QHBoxLayout()
@@ -1674,7 +1702,8 @@ class MainWindow(QMainWindow):
         self._sync_browser_runtime_state()
 
     def _should_use_background_browser_host(self) -> bool:
-        interaction_active = self.browser_interaction_active or self.page_loading or self.clipboard_translation_in_progress
+        interaction_active = (self.browser_interaction_active or self.page_loading or self.clipboard_translation_in_progress
+                              or bool(getattr(self, "response_followup_progress_call_id", "")))
 
         return self._is_window_hidden_for_tray() and (self.settings.keep_chatgpt_in_background or interaction_active)
 
@@ -1700,6 +1729,7 @@ class MainWindow(QMainWindow):
         visible_main_window_render = window_visible and not self.browser_background_mode
         background_interaction_active = self.browser_background_mode and (
             self.browser_interaction_active or self.page_loading or self.clipboard_translation_in_progress
+            or bool(getattr(self, "response_followup_progress_call_id", ""))
         )
         background_keepalive_active = (
             self.browser_background_mode
@@ -1708,6 +1738,9 @@ class MainWindow(QMainWindow):
             and self.settings.monitoring_enabled
         )
         should_render_page = visible_main_window_render or background_interaction_active or background_keepalive_active
+        if should_render_page != getattr(self, "diagnostic_last_render_state", None):
+            self.diagnostic_last_render_state = should_render_page
+            log_event("browser.lifecycle_changed", active=should_render_page, background=self.browser_background_mode)
         frozen_state = getattr(QWebEnginePage.LifecycleState, "Frozen", QWebEnginePage.LifecycleState.Active)
 
         try:
@@ -1764,6 +1797,9 @@ class MainWindow(QMainWindow):
         if self.page_loading or self.browser_interaction_active or self.clipboard_translation_in_progress:
             return False
 
+        if getattr(self, "response_followup_progress_call_id", ""):
+            return False
+
         if not self.settings.monitoring_enabled or not self.settings.keep_chatgpt_in_background:
             return False
 
@@ -1796,14 +1832,16 @@ class MainWindow(QMainWindow):
                 """ % AUTOMATION_SCRIPT_VERSION,
                 timeout_ms=4000,
             )
-        except RuntimeError:
+        except RuntimeError as error:
             self.browser_keepalive_failures += 1
+            log_exception("browser.keepalive_failed", error, count=self.browser_keepalive_failures)
 
             if self.browser_keepalive_failures >= 2 and not self.page_loading:
                 self.browser_keepalive_failures = 0
                 self.automation_ready = False
                 self._set_live_status("A ChatGPT oldal felébresztése miatt újratöltés történt.")
                 self.browser.reload()
+                log_event("browser.keepalive_reloaded", reason="consecutive_failures")
 
             return
 
@@ -2060,6 +2098,8 @@ class MainWindow(QMainWindow):
         )
 
     def _handle_load_started(self) -> None:
+        self.browser_load_started_at = time.monotonic()
+        log_event("browser.load_started", request_id=getattr(self, "active_translation_request_id", None))
         self.page_loading = True
         self.automation_ready = False
         self._update_browser_origin_label(self.browser.url())
@@ -2067,6 +2107,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._sync_browser_runtime_state)
 
     def _handle_load_finished(self, ok: bool) -> None:
+        log_event("browser.load_finished", success=ok,
+                  duration_ms=round((time.monotonic() - getattr(self, "browser_load_started_at", time.monotonic())) * 1000))
         self.page_loading = False
         self._update_browser_origin_label(self.browser.url())
 
@@ -2079,6 +2121,7 @@ class MainWindow(QMainWindow):
             self._ensure_automation_ready()
             self._set_live_status("A ChatGPT oldal betöltve.")
         except RuntimeError as error:
+            log_exception("browser.automation_failed", error)
             self._set_live_status(str(error))
         finally:
             QTimer.singleShot(0, self._sync_browser_runtime_state)
@@ -2096,6 +2139,11 @@ class MainWindow(QMainWindow):
         previous_settings = self.settings
         self.settings = self._read_settings_from_form()
         self.store.save_settings(self.settings)
+        log_event("settings.saved", monitoring_enabled=self.settings.monitoring_enabled,
+                  ocr_enabled=self.settings.ocr_text_from_clipboard_image,
+                  game_mode_enabled=self.settings.game_mode_enabled,
+                  gpu_enabled=self.settings.webview_gpu_acceleration_enabled,
+                  background=self.settings.keep_chatgpt_in_background)
         self.translation_overlay.set_overlay_opacity_percent(self.settings.overlay_opacity_percent)
         self._register_hotkeys()
         self._refresh_system_keep_awake()
@@ -2110,6 +2158,7 @@ class MainWindow(QMainWindow):
         self._set_live_status(self._hotkey_status_message("Beállítások elmentve."))
 
     def reset_defaults(self) -> None:
+        log_event("settings.defaults_restored")
         previous_settings = self.settings
         self.settings = AppSettings.from_dict(DEFAULT_SETTINGS)
         self._apply_settings_to_form(self.settings)
@@ -2148,6 +2197,7 @@ class MainWindow(QMainWindow):
             self._ensure_automation_ready()
         except Exception as error:  # noqa: BLE001
             message = str(error)
+            log_exception("browser.open_failed", error)
             self._save_last_run_status(message)
             self._set_live_status(message)
 
@@ -2157,6 +2207,7 @@ class MainWindow(QMainWindow):
             self._end_browser_interaction()
 
     def send_prompt_now(self) -> None:
+        log_event("prompt.requested", busy=self.browser_interaction_active or self.clipboard_translation_in_progress)
         if self.browser_interaction_active or self.clipboard_translation_in_progress:
             self._set_live_status("Már fut egy másik ChatGPT művelet, várd meg amíg befejeződik.")
             return
@@ -2182,6 +2233,7 @@ class MainWindow(QMainWindow):
             self._save_last_run_status("A kézi prompt elküldve a ChatGPT-nek.")
             self._set_live_status("A prompt elküldve.")
         except Exception as error:  # noqa: BLE001
+            log_exception("prompt.failed", error)
             self._save_last_run_status(str(error))
             self._set_live_status(str(error))
             QMessageBox.warning(self, APP_NAME, str(error))
@@ -2216,8 +2268,14 @@ class MainWindow(QMainWindow):
         payload = self.pending_clipboard_payload
         self.pending_clipboard_payload = None
 
+        queue = getattr(self, "pending_clipboard_payload_queue", [])
+        if queue:
+            self.pending_clipboard_payload = queue.pop(0)
+
         if payload is None:
             return
+
+        log_event("capture.dequeued", request_id=payload.get("requestId"), pending_count=len(queue))
 
         self.last_seen_image_signature = str(payload["imageSignature"])
         self._process_clipboard_translation(payload)
@@ -2236,12 +2294,29 @@ class MainWindow(QMainWindow):
 
         payload = self._read_clipboard_image_payload()
         if not payload or not payload.get("imageSignature"):
+            log_event("capture.clipboard_without_image")
             return
 
         # Az engedély egyszer használható, és az eseménynél dől el, nem a
         # későbbi küldéskor. Az azonos tartalmú új kivágás is új kérés.
+        capture_request_id = getattr(self, "screen_clip_request_id", "")
         self._clear_screen_clip_hotkey_arm()
-        self.pending_clipboard_payload = payload
+        queue = getattr(self, "pending_clipboard_payload_queue", None)
+        if queue is None:
+            queue = self.pending_clipboard_payload_queue = []
+        if self.pending_clipboard_payload is not None and len(queue) >= MAX_PENDING_CLIPBOARD_IMAGES - 1:
+            log_event("capture.queue_full", level="WARNING", pending_count=len(queue) + 1)
+            self._save_last_run_status("A képek várakozási sora megtelt. Várd meg a feldolgozást, majd készíts új kivágást.")
+            return
+        request_id = capture_request_id or uuid.uuid4().hex
+        payload["requestId"] = request_id
+        MainWindow._invalidate_translation_result(self, request_id, "image")
+        if self.pending_clipboard_payload is None:
+            self.pending_clipboard_payload = payload
+        else:
+            queue.append(payload)
+        log_event("capture.accepted", request_id=request_id, image_bytes=len(payload.get("imageBytes") or b""),
+                  pending_count=len(queue) + 1)
 
         self.clipboard_debounce_timer.start()
 
@@ -2255,6 +2330,13 @@ class MainWindow(QMainWindow):
         if self.clipboard_translation_in_progress:
             self._save_last_run_status("Már fut egy képbeküldés, ezt az új képet most kihagyom.")
             return
+
+        request_id = str(payload.get("requestId") or uuid.uuid4().hex)
+        if not payload.get("requestId"):
+            MainWindow._invalidate_translation_result(self, request_id, "image")
+        self.active_translation_request_id = request_id
+        started_at = time.monotonic()
+        log_event("translation.started", request_id=request_id, kind="image")
 
         self.clipboard_translation_in_progress = True
         self._touch_clipboard_translation_heartbeat()
@@ -2277,6 +2359,7 @@ class MainWindow(QMainWindow):
                     copy_to_clipboard=True,
                     show_overlay=True,
                     play_sound=True,
+                    request_id=request_id,
                 )
 
             result = self._execute_delivery(delivery_payload, progress_handler=progress_handler)
@@ -2299,6 +2382,7 @@ class MainWindow(QMainWindow):
                         copy_to_clipboard=True,
                         show_overlay=True,
                         play_sound=not bool(progress_state["notified"]),
+                        request_id=request_id,
                     )
                 self._save_last_run_status(f"A fordítás a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {format_hotkey_definition(self.settings.type_out_hotkey)}")
                 return
@@ -2309,16 +2393,22 @@ class MainWindow(QMainWindow):
                     copy_to_clipboard=False,
                     show_overlay=True,
                     play_sound=False,
+                    request_id=request_id,
                 )
             else:
                 self._hide_translation_overlay()
 
             self._save_last_run_status(success_status_message)
         except Exception as error:  # noqa: BLE001
+            log_exception("translation.failed", error, request_id=request_id, kind="image")
             self._hide_translation_overlay()
             self._save_last_run_status(str(error))
             self._set_live_status(str(error))
         finally:
+            log_event("translation.finished", request_id=request_id, kind="image",
+                      duration_ms=round((time.monotonic() - started_at) * 1000),
+                      success=getattr(self, "translation_result_request_id", "") == request_id)
+            self.active_translation_request_id = ""
             self.clipboard_translation_in_progress = False
             self.clipboard_translation_heartbeat_monotonic = 0.0
             self._end_browser_interaction()
@@ -2333,6 +2423,7 @@ class MainWindow(QMainWindow):
                 lambda: self.ocr_service.extract_text_candidates(
                     bytes(payload.get("imageBytes") or b""),
                     limit=5,
+                    request_id=getattr(self, "active_translation_request_id", None),
                 ),
                 progress_message="Szöveg kiolvasása képről folyamatban.",
             )
@@ -2387,6 +2478,7 @@ class MainWindow(QMainWindow):
         copy_to_clipboard: bool,
         show_overlay: bool,
         play_sound: bool,
+        request_id: str | None = None,
     ) -> tuple[Callable[[dict[str, Any]], None], dict[str, Any]]:
         state = {
             "last_text": "",
@@ -2402,14 +2494,20 @@ class MainWindow(QMainWindow):
             if not translated_text or translated_text == str(state["last_text"]):
                 return
 
+            if request_id and request_id != getattr(self, "latest_translation_request_id", ""):
+                log_event("response.obsolete", request_id=request_id, text_length=len(translated_text))
+                return
+
             self._store_translation_result(
                 translated_text,
                 copy_to_clipboard=copy_to_clipboard,
                 show_overlay=show_overlay,
                 play_sound=play_sound and not bool(state["notified"]),
+                request_id=request_id,
             )
             state["last_text"] = translated_text
             state["notified"] = True
+            self._save_last_run_status("A legújabb fordítás megérkezett és memóriába mentve.")
 
         return handle_progress, state
 
@@ -2430,10 +2528,21 @@ class MainWindow(QMainWindow):
         self.response_followup_started_monotonic = time.monotonic()
         self.response_followup_last_activity_monotonic = self.response_followup_started_monotonic
         self.response_followup_error_count = 0
+        self.response_followup_request_id = getattr(self, "active_translation_request_id", "")
+        self.response_followup_diagnostic_call_id = getattr(self, "last_delivery_diagnostic_call_id", "")
+        self.response_followup_waiting_for_first_response = not bool(getattr(self, "last_translated_text", ""))
+        log_event("response.followup_started", request_id=self.response_followup_request_id,
+                  response_pending=self.response_followup_waiting_for_first_response)
         self.response_followup_timer.start()
+        if hasattr(self, "_sync_browser_host_mode"):
+            self._sync_browser_host_mode()
+            self._sync_browser_runtime_state()
 
     def _stop_response_followup_polling(self, *, stop_remote: bool = True) -> None:
         current_progress_call_id = str(self.response_followup_progress_call_id or "").strip()
+        diagnostic_call_id = getattr(self, "response_followup_diagnostic_call_id", "")
+        if current_progress_call_id:
+            log_event("response.followup_stopped", request_id=getattr(self, "response_followup_request_id", None))
 
         self.response_followup_timer.stop()
         self.response_followup_progress_call_id = ""
@@ -2442,6 +2551,12 @@ class MainWindow(QMainWindow):
         self.response_followup_started_monotonic = 0.0
         self.response_followup_last_activity_monotonic = 0.0
         self.response_followup_error_count = 0
+        self.response_followup_request_id = ""
+        self.response_followup_waiting_for_first_response = False
+        self.response_followup_diagnostic_call_id = ""
+        if hasattr(self, "_sync_browser_host_mode"):
+            self._sync_browser_host_mode()
+            self._sync_browser_runtime_state()
 
         if not current_progress_call_id:
             return
@@ -2455,6 +2570,8 @@ class MainWindow(QMainWindow):
                       }}
                       const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
                       delete progressBucket[{json.dumps(current_progress_call_id)}];
+                      const diagnosticBucket = window.__gamerTranslatorDiagnostics || Object.create(null);
+                      delete diagnosticBucket[{json.dumps(diagnostic_call_id)}];
                       return true;
                     }})()
                 """,
@@ -2471,6 +2588,10 @@ class MainWindow(QMainWindow):
             return
 
         now = time.monotonic()
+        request_id = getattr(self, "response_followup_request_id", "")
+        if request_id and request_id != getattr(self, "latest_translation_request_id", ""):
+            self._stop_response_followup_polling()
+            return
 
         if (
             self.response_followup_started_monotonic > 0.0
@@ -2480,6 +2601,8 @@ class MainWindow(QMainWindow):
             return
 
         if (
+            not getattr(self, "response_followup_waiting_for_first_response", False)
+            and
             self.response_followup_last_activity_monotonic > 0.0
             and now - self.response_followup_last_activity_monotonic >= RESPONSE_FOLLOWUP_IDLE_TIMEOUT_SECONDS
         ):
@@ -2487,16 +2610,21 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            diagnostic_call_id = getattr(self, "response_followup_diagnostic_call_id", "")
             progress_json = self._run_javascript(
                 f"""
                     (() => {{
                       const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
-                      return progressBucket[{json.dumps(progress_call_id)}] ?? null;
+                      const diagnosticBucket = window.__gamerTranslatorDiagnostics || Object.create(null);
+                      const diagnostics = diagnosticBucket[{json.dumps(diagnostic_call_id)}] || [];
+                      diagnosticBucket[{json.dumps(diagnostic_call_id)}] = [];
+                      return JSON.stringify({{ progress: progressBucket[{json.dumps(progress_call_id)}] ?? null, diagnostics }});
                     }})()
                 """,
                 timeout_ms=3000,
             )
-        except Exception:
+        except Exception as error:
+            log_exception("response.followup_poll_failed", error, request_id=request_id)
             self.response_followup_error_count += 1
 
             if self.response_followup_error_count >= RESPONSE_FOLLOWUP_MAX_ERROR_COUNT:
@@ -2509,6 +2637,10 @@ class MainWindow(QMainWindow):
 
         try:
             progress = json.loads(progress_json)
+            if isinstance(progress, dict) and "diagnostics" in progress:
+                MainWindow._log_page_diagnostics(self, progress.get("diagnostics"), request_id)
+                nested_progress = progress.get("progress")
+                progress = json.loads(nested_progress) if isinstance(nested_progress, str) and nested_progress else {}
             if not isinstance(progress, dict):
                 return
             progress_sequence = int(progress.get("seq") or 0)
@@ -2521,20 +2653,18 @@ class MainWindow(QMainWindow):
         self.response_followup_last_sequence = progress_sequence
         self.response_followup_last_activity_monotonic = time.monotonic()
         self.response_followup_error_count = 0
+        if str(progress.get("kind") or "") == "assistant_response":
+            self.response_followup_waiting_for_first_response = False
+
+        progress_handler = self.response_followup_handler
+        if progress_handler is not None:
+            try:
+                progress_handler(progress)
+            except Exception as error:
+                log_exception("response.followup_handler_failed", error, request_id=request_id)
 
         if bool(progress.get("done")):
             self._stop_response_followup_polling(stop_remote=False)
-            return
-
-        progress_handler = self.response_followup_handler
-
-        if progress_handler is None:
-            return
-
-        try:
-            progress_handler(progress)
-        except Exception:
-            pass
 
     def _process_quick_chat_translation(self, prompt_text: str) -> None:
         cleaned_prompt = str(prompt_text or "").strip()
@@ -2556,6 +2686,12 @@ class MainWindow(QMainWindow):
             self.quick_chat_overlay.show_error(message)
             return
 
+        request_id = uuid.uuid4().hex
+        MainWindow._invalidate_translation_result(self, request_id, "quick_chat")
+        self.active_translation_request_id = request_id
+        started_at = time.monotonic()
+        log_event("translation.started", request_id=request_id, kind="quick_chat", text_length=len(cleaned_prompt))
+
         self._begin_browser_interaction()
         self.quick_chat_overlay.hide_overlay()
         self._show_loading_overlay()
@@ -2568,6 +2704,7 @@ class MainWindow(QMainWindow):
                 copy_to_clipboard=True,
                 show_overlay=True,
                 play_sound=True,
+                request_id=request_id,
             )
             result = self._execute_delivery(
                 {
@@ -2601,15 +2738,30 @@ class MainWindow(QMainWindow):
                     copy_to_clipboard=True,
                     show_overlay=True,
                     play_sound=not bool(progress_state["notified"]),
+                    request_id=request_id,
                 )
             self._save_last_run_status(
                 f"A gyors chat fordítása a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {format_hotkey_definition(self.settings.type_out_hotkey)}"
             )
         except Exception as error:  # noqa: BLE001
+            log_exception("translation.failed", error, request_id=request_id, kind="quick_chat")
             self._hide_translation_overlay()
             self._save_last_run_status(str(error))
         finally:
+            log_event("translation.finished", request_id=request_id, kind="quick_chat",
+                      duration_ms=round((time.monotonic() - started_at) * 1000),
+                      success=getattr(self, "translation_result_request_id", "") == request_id)
+            self.active_translation_request_id = ""
             self._end_browser_interaction()
+
+    def _invalidate_translation_result(self, request_id: str, kind: str) -> None:
+        self.latest_translation_request_id = request_id
+        self.translation_result_request_id = ""
+        self.last_translated_text = ""
+        store = getattr(self, "store", None)
+        if store is not None:
+            store.save_last_translated_text("")
+        log_event("translation.previous_result_invalidated", request_id=request_id, kind=kind)
 
     def _store_translation_result(
         self,
@@ -2618,9 +2770,17 @@ class MainWindow(QMainWindow):
         copy_to_clipboard: bool,
         show_overlay: bool,
         play_sound: bool,
+        request_id: str | None = None,
     ) -> None:
+        if request_id and request_id != getattr(self, "latest_translation_request_id", ""):
+            log_event("translation.obsolete_result_ignored", request_id=request_id, text_length=len(translated_text))
+            return
+        if request_id:
+            self.translation_result_request_id = request_id
         text_changed = translated_text != self.last_translated_text
         self.last_translated_text = translated_text
+        log_event("translation.result_saved", request_id=request_id, text_length=len(translated_text),
+                  changed_count=int(text_changed))
 
         if text_changed:
             self.store.save_last_translated_text(translated_text)
@@ -2711,6 +2871,8 @@ class MainWindow(QMainWindow):
                     pass
 
     def _save_last_run_status(self, message: str) -> None:
+        log_event("status.saved", request_id=getattr(self, "active_translation_request_id", None),
+                  text_length=len(message), reason="response_timeout" if message == "A ChatGPT válasza nem érkezett meg időben." else "status_update")
         self.last_run_status = self.store.save_last_run_status(message)
         self._render_last_run_status(self.last_run_status)
         self._set_live_status(message)
@@ -2836,12 +2998,14 @@ class MainWindow(QMainWindow):
             self.browser_background_host.update()
 
     def _begin_browser_interaction(self) -> None:
+        log_event("browser.interaction_started", request_id=getattr(self, "active_translation_request_id", None))
         self.browser_interaction_active = True
         self._touch_browser_interaction_heartbeat()
         self._sync_browser_host_mode()
         self._sync_browser_runtime_state()
 
     def _end_browser_interaction(self) -> None:
+        log_event("browser.interaction_finished", request_id=getattr(self, "active_translation_request_id", None))
         self.browser_interaction_active = False
         self.browser_interaction_heartbeat_monotonic = 0.0
         self._sync_browser_host_mode()
@@ -2870,6 +3034,10 @@ class MainWindow(QMainWindow):
         if not reset_browser_interaction and not reset_clipboard_translation:
             return
 
+        log_event("browser.watchdog_recovered", level="WARNING",
+                  request_id=getattr(self, "active_translation_request_id", None),
+                  busy=reset_browser_interaction, stale=reset_clipboard_translation)
+
         if reset_browser_interaction:
             self.browser_interaction_active = False
             self.browser_interaction_heartbeat_monotonic = 0.0
@@ -2885,6 +3053,7 @@ class MainWindow(QMainWindow):
         self._set_live_status("A beragadt ChatGPT művelet állapota visszaállítva lett.")
 
     def _register_hotkeys(self) -> None:
+        log_event("hotkey.registration_started")
         if sys.platform != "win32":
             self.hotkey_errors = {
                 "type_out": "A gyorsbillentyűk csak Windowson érhetők el.",
@@ -2979,6 +3148,7 @@ class MainWindow(QMainWindow):
             self._uninstall_keyboard_hook()
 
     def _install_keyboard_hook(self) -> None:
+        log_event("hotkey.keyboard_hook_installing")
         if sys.platform != "win32" or self.keyboard_hook_handle is not None:
             return
 
@@ -2988,6 +3158,7 @@ class MainWindow(QMainWindow):
 
         if not self.keyboard_hook_handle:
             error_code = int(kernel32.GetLastError())
+            log_event("hotkey.keyboard_hook_failed", level="ERROR", code=error_code)
             suffix = f" Windows hibakód: {error_code}" if error_code else ""
             error_message = f"A gyorsbillentyű-hook telepítése nem sikerült.{suffix}"
 
@@ -3001,6 +3172,7 @@ class MainWindow(QMainWindow):
             self.keyboard_hook_callback = None
 
     def _uninstall_keyboard_hook(self) -> None:
+        log_event("hotkey.keyboard_hook_removing", active=bool(self.keyboard_hook_handle))
         if sys.platform != "win32":
             return
 
@@ -3011,6 +3183,7 @@ class MainWindow(QMainWindow):
         self.keyboard_hook_callback = None
 
     def _install_mouse_hook(self) -> None:
+        log_event("hotkey.mouse_hook_installing")
         if sys.platform != "win32" or self.mouse_hook_handle is not None:
             return
 
@@ -3020,6 +3193,7 @@ class MainWindow(QMainWindow):
 
         if not self.mouse_hook_handle:
             error_code = int(kernel32.GetLastError())
+            log_event("hotkey.mouse_hook_failed", level="ERROR", code=error_code)
             suffix = f" Windows hibakód: {error_code}" if error_code else ""
             for action, (_modifiers, key) in list(self.registered_hotkeys.items()):
                 if key in MOUSE_KEYCODES:
@@ -3031,6 +3205,7 @@ class MainWindow(QMainWindow):
             self.mouse_hook_callback = None
 
     def _uninstall_mouse_hook(self) -> None:
+        log_event("hotkey.mouse_hook_removing", active=bool(self.mouse_hook_handle))
         if sys.platform != "win32":
             return
 
@@ -3164,11 +3339,24 @@ class MainWindow(QMainWindow):
     def _trigger_hotkey_action(self, action: str, generation: int | None = None) -> None:
         if (action not in self.registered_hotkeys
                 or generation is not None and generation != self.hotkey_generation
-                or self.hotkey_action_running
                 or active_hotkey_editor() is not None):
+            log_event("hotkey.rejected", action=action, reason="inactive_or_generation", generation=generation or 0)
             return
 
+        if self.hotkey_action_running:
+            queue = getattr(self, "pending_hotkey_actions", None)
+            if queue is None:
+                queue = self.pending_hotkey_actions = []
+            if action != "type_out" and len(queue) < 4:
+                queue.append((action, self.hotkey_generation))
+                log_event("hotkey.queued", action=action, pending_count=len(queue))
+            else:
+                log_event("hotkey.rejected", action=action, reason="busy", pending_count=len(queue))
+            return
+
+        log_event("hotkey.triggered", action=action, generation=self.hotkey_generation)
         self.hotkey_action_running = True
+        started_at = time.monotonic()
         try:
             if action == "type_out":
                 self._trigger_type_out_hotkey()
@@ -3176,8 +3364,16 @@ class MainWindow(QMainWindow):
                 self._trigger_screen_clip_hotkey()
             elif action == "quick_chat":
                 self._trigger_quick_chat_hotkey()
+        except Exception as error:
+            log_exception("hotkey.failed", error, action=action)
+            raise
         finally:
             self.hotkey_action_running = False
+            log_event("hotkey.finished", action=action, duration_ms=round((time.monotonic() - started_at) * 1000))
+            queue = getattr(self, "pending_hotkey_actions", [])
+            if queue:
+                next_action, next_generation = queue.pop(0)
+                QTimer.singleShot(0, lambda: self._trigger_hotkey_action(next_action, next_generation))
 
     def _mask_hotkey_modifier_menu(self, modifiers: int) -> None:
         if sys.platform != "win32":
@@ -3215,7 +3411,14 @@ class MainWindow(QMainWindow):
             return
 
         if not self.last_translated_text:
-            self._set_live_status("Nincs memóriában eltárolt fordítás a begépeléshez.")
+            log_event("typing.rejected", reason="no_current_translation", request_id=getattr(self, "latest_translation_request_id", None))
+            self._set_live_status("Nincs kész fordítás a legutóbbi kéréshez. Várd meg a választ, vagy készíts új kivágást.")
+            return
+
+        latest_request_id = getattr(self, "latest_translation_request_id", "")
+        if latest_request_id and latest_request_id != getattr(self, "translation_result_request_id", ""):
+            log_event("typing.rejected", reason="obsolete_translation", request_id=latest_request_id)
+            self._set_live_status("A legutóbbi fordítás még nem készült el.")
             return
 
         # A várakozás alatt is válthat ablakot a felhasználó; a cél már a
@@ -3225,6 +3428,7 @@ class MainWindow(QMainWindow):
             self._set_live_status("A begépeléshez nem azonosítható aktív ablak.")
             return
         if self._wait_for_modifier_release() and self._type_cached_text_via_hotkey(target_window=target_window):
+            log_event("typing.completed", request_id=latest_request_id, text_length=len(self.last_translated_text))
             self._set_live_status(f"A mentett fordítás begépelve: {format_hotkey_definition(self.settings.type_out_hotkey)}")
 
     def _trigger_screen_clip_hotkey(self) -> None:
@@ -3248,6 +3452,7 @@ class MainWindow(QMainWindow):
             os.startfile("ms-screenclip:")
             self._set_live_status(f"A Windows képkivágó megnyitva: {format_hotkey_definition(self.settings.screen_clip_hotkey)}")
         except OSError as error:
+            log_exception("capture.launch_failed", error)
             self._clear_screen_clip_hotkey_arm()
             self._set_live_status(f"A képkivágó nem indítható el: {error}")
 
@@ -3294,11 +3499,18 @@ class MainWindow(QMainWindow):
         if target_window is None:
             target_window = user32.GetForegroundWindow()
 
+        typing_request_id = getattr(self, "latest_translation_request_id", "")
+        log_event("typing.started", request_id=typing_request_id, text_length=len(self.last_translated_text))
         for character in self.last_translated_text:
             # A hosszú begépelés alatt is ki kell szolgálni a natív hookot,
             # különben a Windows időtúllépés miatt eltávolíthatja.
             QGuiApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            if typing_request_id != getattr(self, "latest_translation_request_id", ""):
+                log_event("typing.cancelled", request_id=typing_request_id, reason="new_request")
+                self._set_live_status("A begépelés megszakadt, mert új fordítási kérés érkezett.")
+                return False
             if not target_window or user32.GetForegroundWindow() != target_window:
+                log_event("typing.cancelled", request_id=typing_request_id, reason="focus_changed")
                 self._set_live_status("A begépelés megszakadt, mert megváltozott az aktív ablak.")
                 return False
             inputs = build_character_inputs(character)
@@ -3471,6 +3683,7 @@ class MainWindow(QMainWindow):
             self.automation_ready = True
             return
 
+        log_event("browser.automation_injected", source="application_world")
         self._run_javascript(self.automation_script, timeout_ms=10000)
         ready = self._run_javascript(
             f"typeof window.__gamerTranslatorDeliver === 'function' && window.__gamerTranslatorDeliverVersion === '{AUTOMATION_SCRIPT_VERSION}';",
@@ -3491,9 +3704,15 @@ class MainWindow(QMainWindow):
         self._stop_response_followup_polling()
         self._ensure_automation_ready()
         call_id = uuid.uuid4().hex
+        request_id = getattr(self, "active_translation_request_id", "") or call_id
+        diagnostic_call_id = uuid.uuid4().hex
+        self.last_delivery_diagnostic_call_id = diagnostic_call_id
         progress_call_id = f"{call_id}-progress"
         payload_with_progress = dict(payload)
         payload_with_progress["progressCallId"] = progress_call_id
+        payload_with_progress["diagnosticCallId"] = diagnostic_call_id
+        log_event("delivery.started", request_id=request_id, has_image=bool(payload.get("imageDataUrl")),
+                  text_length=len(str(payload.get("prompt") or "")), timeout_ms=int(payload.get("responseTimeoutMs", 0)))
         payload_json = json.dumps(payload_with_progress, ensure_ascii=False).replace("</", "<\\/")
         launch_script = f"""
             (() => {{
@@ -3512,6 +3731,7 @@ class MainWindow(QMainWindow):
               return true;
             }})()
         """
+        preserve_diagnostics = False
         try:
             self._run_javascript(launch_script, timeout_ms=5000)
 
@@ -3532,6 +3752,9 @@ class MainWindow(QMainWindow):
                           const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
                           const resultValue = resultBucket["{call_id}"];
                           const progressValue = progressBucket["{progress_call_id}"] ?? null;
+                          const diagnosticBucket = window.__gamerTranslatorDiagnostics || Object.create(null);
+                          const diagnostics = diagnosticBucket["{diagnostic_call_id}"] || [];
+                          diagnosticBucket["{diagnostic_call_id}"] = [];
 
                           if (resultValue !== undefined) {{
                             delete resultBucket["{call_id}"];
@@ -3540,7 +3763,8 @@ class MainWindow(QMainWindow):
 
                           return JSON.stringify({{
                             result: resultValue === undefined ? null : resultValue,
-                            progress: progressValue
+                            progress: progressValue,
+                            diagnostics
                           }});
                         }})()
                     """,
@@ -3548,6 +3772,7 @@ class MainWindow(QMainWindow):
                 )
 
                 state = json.loads(state_json) if isinstance(state_json, str) and state_json else {}
+                MainWindow._log_page_diagnostics(self, state.get("diagnostics"), request_id)
                 progress_json = state.get("progress")
 
                 if isinstance(progress_json, str) and progress_json and progress_handler is not None:
@@ -3559,21 +3784,31 @@ class MainWindow(QMainWindow):
 
                         try:
                             progress_handler(progress)
-                        except Exception:
-                            pass
+                        except Exception as error:
+                            log_exception("response.progress_failed", error, request_id=request_id)
 
                 result_json = state.get("result")
 
                 if isinstance(result_json, str) and result_json:
                     result = json.loads(result_json)
+                    preserve_diagnostics = bool(result.get("followUpProgressCallId"))
 
                     if result.get("ok") is False:
+                        followup_id = str(result.get("followUpProgressCallId") or "").strip()
+                        if followup_id and progress_handler is not None:
+                            self._start_response_followup_polling(followup_id, progress_handler)
+                        log_event("delivery.failed", level="ERROR", request_id=request_id,
+                                  reason="response_timeout" if result.get("responsePending") else "page_operation",
+                                  response_pending=bool(result.get("responsePending")))
                         raise RuntimeError(result.get("error") or "Az oldaloldali művelet hibával tért vissza.")
 
+                    log_event("delivery.completed", request_id=request_id,
+                              text_length=len(str(result.get("assistantResponseText") or "")))
                     return result
 
                 self._wait_with_events(UI_FRAME_INTERVAL_MS)
 
+            log_event("delivery.timeout", level="ERROR", request_id=request_id, timeout_ms=timeout_ms)
             raise RuntimeError("A ChatGPT oldaloldali művelete nem fejeződött be időben.")
         finally:
             try:
@@ -3584,6 +3819,10 @@ class MainWindow(QMainWindow):
                           const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
                           delete resultBucket["{call_id}"];
                           delete progressBucket["{progress_call_id}"];
+                          if (!{str(preserve_diagnostics).lower()}) {{
+                            const diagnosticBucket = window.__gamerTranslatorDiagnostics || Object.create(null);
+                            delete diagnosticBucket["{diagnostic_call_id}"];
+                          }}
                           return true;
                         }})()
                     """,
@@ -3682,6 +3921,8 @@ class MainWindow(QMainWindow):
         heartbeat_timer.stop()
 
         if not result_box["done"]:
+            log_event("browser.javascript_timeout", level="ERROR",
+                      request_id=getattr(self, "active_translation_request_id", None), timeout_ms=timeout_ms)
             raise RuntimeError("A JavaScript futtatása időtúllépéssel megszakadt.")
 
         if not self._is_chatgpt_url(self.browser.url().toString()):
@@ -3698,12 +3939,15 @@ class MainWindow(QMainWindow):
         loop.exec()
 
     def _read_clipboard_image_payload(self) -> dict[str, Any] | None:
+        started_at = time.monotonic()
         image = self.clipboard.image()
 
         if image.isNull():
             return None
 
         if image.width() * image.height() > MAX_CLIPBOARD_IMAGE_PIXELS:
+            log_event("capture.image_rejected", level="WARNING", reason="pixel_limit",
+                      image_width=image.width(), image_height=image.height())
             self._set_live_status("A vágólap képe túl nagy (legfeljebb 40 millió képpont lehet).")
             return None
 
@@ -3717,11 +3961,15 @@ class MainWindow(QMainWindow):
         if not raw_bytes:
             return None
         if len(raw_bytes) > MAX_CLIPBOARD_IMAGE_BYTES:
+            log_event("capture.image_rejected", level="WARNING", reason="byte_limit", image_bytes=len(raw_bytes))
             self._set_live_status("A vágólap PNG képe túl nagy (legfeljebb 20 MiB lehet).")
             return None
 
         signature = hashlib.sha256(raw_bytes).hexdigest()
         encoded = base64.b64encode(raw_bytes).decode("ascii")
+        log_event("capture.image_encoded", image_width=image.width(), image_height=image.height(),
+                  request_id=getattr(self, "screen_clip_request_id", None),
+                  image_bytes=len(raw_bytes), image_encoding_ms=round((time.monotonic() - started_at) * 1000))
 
         return {
             "imageDataUrl": f"data:image/png;base64,{encoded}",
@@ -3736,10 +3984,16 @@ class MainWindow(QMainWindow):
         return str(payload["imageSignature"]) if payload else ""
 
     def _arm_screen_clip_hotkey(self) -> None:
+        self.screen_clip_request_id = uuid.uuid4().hex
         self.screen_clip_hotkey_armed_until = time.monotonic() + SCREEN_CLIP_ARM_TIMEOUT_SECONDS
+        log_event("capture.armed", request_id=self.screen_clip_request_id,
+                  timeout_ms=int(SCREEN_CLIP_ARM_TIMEOUT_SECONDS * 1000))
 
     def _clear_screen_clip_hotkey_arm(self) -> None:
+        if self.screen_clip_hotkey_armed_until > 0.0:
+            log_event("capture.permission_cleared", request_id=getattr(self, "screen_clip_request_id", None))
         self.screen_clip_hotkey_armed_until = 0.0
+        self.screen_clip_request_id = ""
 
     def _is_screen_clip_hotkey_armed(self) -> bool:
         if self.screen_clip_hotkey_armed_until <= 0.0:
@@ -3747,6 +4001,9 @@ class MainWindow(QMainWindow):
 
         if time.monotonic() >= self.screen_clip_hotkey_armed_until:
             self.screen_clip_hotkey_armed_until = 0.0
+            log_event("capture.permission_expired", level="WARNING", request_id=getattr(self, "screen_clip_request_id", None))
+            self.screen_clip_request_id = ""
+            self._set_live_status("A képkivágásra várás lejárt. Indíts új kivágást a saját gyorsgombbal.")
             return False
 
         return True
@@ -3757,6 +4014,50 @@ class MainWindow(QMainWindow):
 
         self.raise_()
         self.activateWindow()
+
+    def _open_log_directory(self) -> None:
+        directory = self.store.root_dir / "logs"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(directory))
+            log_event("diagnostics.directory_opened")
+        except OSError as error:
+            log_exception("diagnostics.directory_open_failed", error)
+            self._set_live_status("A naplómappa megnyitása nem sikerült.")
+
+    def _record_runtime_diagnostics(self) -> None:
+        now = time.monotonic()
+        lag_ms = max(0, round((now - self.diagnostics_last_tick) * 1000) - 15000)
+        self.diagnostics_last_tick = now
+        try:
+            renderer_pid = int(self.page.renderProcessPid())
+        except RuntimeError:
+            renderer_pid = 0
+        log_event("runtime.snapshot", **resource_snapshot(renderer_pid=renderer_pid), lag_ms=lag_ms,
+                  request_id=getattr(self, "active_translation_request_id", None),
+                  loading=self.page_loading, busy=self.browser_interaction_active,
+                  background=self.browser_background_mode, visible=self.isVisible(), minimized=self.isMinimized(),
+                  pending_count=len(self.pending_clipboard_payload_queue) + int(self.pending_clipboard_payload is not None),
+                  followup=bool(self.response_followup_progress_call_id))
+
+    def _handle_renderer_terminated(self, status, exit_code: int) -> None:
+        log_event("browser.renderer_terminated", level="ERROR", exit_code=exit_code,
+                  state=status.name, request_id=getattr(self, "active_translation_request_id", None))
+        MainWindow._invalidate_translation_result(self, uuid.uuid4().hex, "renderer_crash")
+        self.automation_ready = False
+        self._save_last_run_status("A ChatGPT böngészőfolyamata leállt. Nyisd meg újra a ChatGPT oldalt.")
+
+    def _log_page_diagnostics(self, entries: Any, request_id: str) -> None:
+        if not isinstance(entries, list):
+            return
+        for entry in entries[:100]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("fields"), dict):
+                continue
+            event = entry.get("event")
+            if isinstance(event, str) and event.isascii() and len(event) <= 80 and all(char.isalnum() or char in "._" for char in event):
+                fields = {key: value for key, value in entry["fields"].items()
+                          if isinstance(key, str) and key not in {"event", "request_id", "level"}}
+                log_event(f"page.{event}", request_id=request_id, **fields)
 
     def _is_chatgpt_url(self, url: str) -> bool:
         if not url:

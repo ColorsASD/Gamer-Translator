@@ -1,5 +1,5 @@
 (() => {
-  const AUTOMATION_SCRIPT_VERSION = "2026-08-30-1";
+  const AUTOMATION_SCRIPT_VERSION = "2026-10-01-1";
   const TRUSTED_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
   const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
   let deliveryInProgress = false;
@@ -279,7 +279,9 @@
           "aria-busy",
           "aria-hidden",
           "class",
+          "data-message-id",
           "data-message-author-role",
+          "data-turn-id",
           "data-state",
           "data-status",
           "data-testid",
@@ -396,6 +398,35 @@
     return window.__gamerTranslatorAssistantResponseFollowUps;
   }
 
+  // Csak technikai állapot kerül a diagnosztikába, beszélgetés és képtartalom nem.
+  function writeDiagnosticEntry(callId, event, fields = {}) {
+    const normalizedCallId = String(callId || "").trim();
+    if (!/^[A-Za-z0-9_-]{1,120}$/.test(normalizedCallId)) {
+      return;
+    }
+    const safeFields = {};
+    const allowedFields = new Set([
+      "stage", "reason", "kind", "method", "attempt", "elapsed_ms", "timeout_ms",
+      "prompt_length", "image_bytes", "attachment_count", "file_count", "pending",
+      "assistant_count", "user_count", "text_length", "fresh", "stable", "has_identity",
+      "auto_submit", "copy_response", "late", "ok"
+    ]);
+    for (const [key, value] of Object.entries(fields)) {
+      if (!allowedFields.has(key)) continue;
+      if (typeof value === "boolean") safeFields[key] = value;
+      else if (typeof value === "number" && Number.isFinite(value)) safeFields[key] = Math.max(0, Math.min(100000000, value));
+      else if (typeof value === "string" && /^[a-z][a-z0-9_]{0,39}$/.test(value)) safeFields[key] = value;
+    }
+    window.__gamerTranslatorDiagnostics = window.__gamerTranslatorDiagnostics || Object.create(null);
+    const buckets = window.__gamerTranslatorDiagnostics;
+    const entries = Array.isArray(buckets[normalizedCallId]) ? buckets[normalizedCallId] : [];
+    entries.push({ event, fields: safeFields });
+    if (entries.length > 100) entries.splice(0, entries.length - 100);
+    buckets[normalizedCallId] = entries;
+    const keys = Object.keys(buckets);
+    for (const oldKey of keys.slice(0, Math.max(0, keys.length - 16))) delete buckets[oldKey];
+  }
+
   function stopAssistantResponseFollowUp(followUpProgressCallId, options = {}) {
     const normalizedFollowUpProgressCallId = String(followUpProgressCallId || "").trim();
 
@@ -405,6 +436,7 @@
 
     const followUps = ensureAssistantResponseFollowUps();
     const existingFollowUp = followUps[normalizedFollowUpProgressCallId];
+    let latestText = String(existingFollowUp?.latestText || "");
 
     if (existingFollowUp) {
       existingFollowUp.stopped = true;
@@ -421,9 +453,18 @@
     }
 
     if (options.emitDone !== false) {
+      if (!latestText) {
+        try {
+          const previousProgress = JSON.parse(window.__gamerTranslatorProgress?.[normalizedFollowUpProgressCallId] || "null");
+          if (previousProgress?.kind === "assistant_response") latestText = String(previousProgress.text || "");
+        } catch (_error) {
+          // A sérült korábbi jelzés nem blokkolhatja a figyelés lezárását.
+        }
+      }
       writeProgressEntry(normalizedFollowUpProgressCallId, {
-        kind: "assistant_response_watch_done",
-        done: true
+        kind: latestText ? "assistant_response" : "assistant_response_watch_done",
+        done: true,
+        ...(latestText ? { text: latestText } : {})
       });
     }
   }
@@ -501,6 +542,9 @@
     };
 
     const composerAutoRecovery = ensureComposerAutoRecoveryWatcher();
+    const deliveryStartedAt = Date.now();
+    let deliveryStage = "initialization";
+    const reportDiagnostic = (event, fields = {}) => writeDiagnosticEntry(payload.diagnosticCallId, event, fields);
     const reportProgress = (progress) => {
       writeProgressEntry(payload.progressCallId, progress);
     };
@@ -524,11 +568,18 @@
         throw new Error("Nincs elküldhető tartalom.");
       }
 
+      for (const followUpCallId of Object.keys(ensureAssistantResponseFollowUps())) {
+        stopAssistantResponseFollowUp(followUpCallId);
+      }
+      reportDiagnostic("delivery_started", { prompt_length: String(payload.prompt || "").length, auto_submit: payload.autoSubmit, copy_response: payload.copyResponseToClipboard });
+
       const assistantSnapshotBeforeSend = payload.copyResponseToClipboard
         ? captureAssistantSnapshot()
         : { count: 0, lastNodeId: "", lastText: "", lastPending: false };
 
+      deliveryStage = "composer";
       let activeComposer = await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "beviteli mező");
+      reportDiagnostic("composer_ready");
 
       if (payload.repairExistingComposerPayload && !payload.prompt && !payload.imageDataUrl) {
         if (payload.autoSubmit) {
@@ -544,10 +595,12 @@
       }
 
       if (payload.imageDataUrl) {
+        deliveryStage = "attachment";
         activeComposer = await attachImage(activeComposer);
       }
 
       if (payload.prompt) {
+        deliveryStage = "prompt";
         activeComposer = await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "frissített beviteli mező");
         writePrompt(activeComposer, payload.prompt);
         activeComposer = await waitForPromptApplied(
@@ -555,24 +608,34 @@
           payload.prompt,
           Math.min(payload.pageReadyTimeoutMs, 1800)
         );
+        reportDiagnostic("prompt_verified", { prompt_length: payload.prompt.length });
       }
 
       if (payload.autoSubmit) {
+        deliveryStage = "submission";
+        reportDiagnostic("submission_started", { kind: payload.imageDataUrl ? "image" : "text" });
         if (payload.imageDataUrl && !payload.prompt) {
           await submitImageMessage(activeComposer);
         } else {
           await submitTextMessage(activeComposer);
         }
+        reportDiagnostic("submission_confirmed");
       }
 
       let assistantResponseText = "";
       let followUpProgressCallId = "";
 
       if (payload.copyResponseToClipboard) {
+        deliveryStage = "response";
         const responseResult = await waitForAssistantResponse(assistantSnapshotBeforeSend, payload.responseTimeoutMs, reportProgress);
         assistantResponseText = responseResult.text;
         followUpProgressCallId = String(responseResult.followUpProgressCallId || "").trim();
+        if (responseResult.responsePending) {
+          return { ok: false, error: "A ChatGPT válasza nem érkezett meg időben.", responsePending: true, followUpProgressCallId };
+        }
       }
+
+      reportDiagnostic("delivery_finished", { ok: true, elapsed_ms: Date.now() - deliveryStartedAt });
 
       return {
         ok: true,
@@ -581,6 +644,7 @@
         followUpProgressCallId
       };
     } catch (error) {
+      reportDiagnostic("delivery_failed", { stage: deliveryStage, elapsed_ms: Date.now() - deliveryStartedAt });
       return {
         ok: false,
         error: error instanceof Error ? error.message : String(error)
@@ -596,78 +660,64 @@
     async function attachImage(composerCandidate) {
       let composer = composerCandidate ?? await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "beviteli mező képbeillesztéshez");
       const imageUploadTimeoutMs = getImageUploadTimeoutMs();
-      const file = dataUrlToFile(
-        payload.imageDataUrl,
-        payload.imageFilename || "snip.png",
-        payload.imageMimeType || "image/png"
-      );
+      const file = dataUrlToFile(payload.imageDataUrl, payload.imageFilename || "snip.png", payload.imageMimeType || "image/png");
       const expectedFileKey = describeSelectedFile(file);
-      let attachAttemptStarted = false;
-      let lastAttachBeforeSnapshot = null;
+      const beforeSnapshot = captureComposerAttachmentSnapshot(composer);
+      reportDiagnostic("attachment_started", { image_bytes: file.size, timeout_ms: imageUploadTimeoutMs });
 
-      for (let checkIndex = 0; checkIndex < SELF_HEAL_CHECK_LIMIT; checkIndex += 1) {
-        composer = findComposer() || composer;
-        const currentSnapshot = captureComposerAttachmentSnapshot(composer);
-
-        if (isAttachmentReadySnapshot(currentSnapshot) && snapshotHasExpectedFile(currentSnapshot, expectedFileKey)) {
-          return composer;
-        }
-
-        if (!hasAttachmentSnapshot(currentSnapshot) || !currentSnapshot.hasPendingAttachmentWork) {
-          const beforeSnapshot = currentSnapshot;
-          lastAttachBeforeSnapshot = beforeSnapshot;
-          const attachedByInput = attachViaFileInput(composer, file);
-          const attachedByDrop = attachedByInput ? false : attachViaDrop(composer, file);
-
-          if (!attachedByInput && !attachedByDrop && !attachAttemptStarted) {
-            throw new Error("A kép csatolása nem sikerült.");
-          }
-
-          attachAttemptStarted = attachAttemptStarted || attachedByInput || attachedByDrop;
-          const afterAttachComposer = findComposer() || composer;
-          const afterAttachSnapshot = captureComposerAttachmentSnapshot(afterAttachComposer);
-
-          if (
-            getAttachmentSnapshotKey(afterAttachSnapshot) !== getAttachmentSnapshotKey(beforeSnapshot)
-            || hasAttachmentSnapshot(afterAttachSnapshot)
-            || afterAttachSnapshot.hasPendingAttachmentWork
-          ) {
-            const attachedComposer = await waitForAttachmentReady(
-              afterAttachComposer,
-              beforeSnapshot,
-              imageUploadTimeoutMs,
-              expectedFileKey,
-            );
-
-            if (attachedComposer) {
-              composer = attachedComposer;
-            }
-          }
-        }
-
-        const verifiedComposer = findComposer() || composer;
-        const verifiedSnapshot = captureComposerAttachmentSnapshot(verifiedComposer);
-
-        if (isExpectedAttachmentReadySnapshot(verifiedSnapshot, lastAttachBeforeSnapshot, expectedFileKey)) {
-          return verifiedComposer;
-        }
-
+      // Egy korábbi csatolmányhoz nem adunk új képet és nem küldjük el véletlenül.
+      if (beforeSnapshot.hasAttachmentPreview || Number(beforeSnapshot.fileInputCount) > 0 || beforeSnapshot.hasPendingAttachmentWork) {
+        reportDiagnostic("attachment_failed", { reason: "existing_attachment" });
+        throw new Error("A beviteli mezőben már van csatolmány vagy folyamatban levő feltöltés. Töröld azt az új kép beillesztése előtt.");
       }
 
-      throw new Error("A kép csatolása az ismételt ellenőrzések után sem sikerült.");
+      const methods = ["input", "drop"];
+      for (let attempt = 0; attempt < methods.length; attempt += 1) {
+        composer = findComposer() || composer;
+        const method = methods[attempt];
+        const started = method === "input" ? attachViaFileInput(composer, file) : attachViaDrop(composer, file);
+        reportDiagnostic("attachment_attempt", { method, attempt: attempt + 1, ok: started });
+        if (!started) continue;
+
+        // Az input.files saját beállítása nem bizonyít feltöltést. A teljes
+        // várakozás lejártáig nincs második drop, így a lassú oldal nem dupláz képet.
+        const attachedComposer = await waitForAttachmentReady(composer, beforeSnapshot, imageUploadTimeoutMs, expectedFileKey);
+        if (attachedComposer) {
+          reportDiagnostic("attachment_ready", { method, attempt: attempt + 1 });
+          return attachedComposer;
+        }
+        const finalSnapshot = captureComposerAttachmentSnapshot(findComposer() || composer);
+        reportDiagnostic("attachment_timeout", { method, attempt: attempt + 1, attachment_count: finalSnapshot.attachmentCount, file_count: finalSnapshot.fileInputCount, pending: finalSnapshot.hasPendingAttachmentWork });
+        if (finalSnapshot.hasAttachmentPreview || finalSnapshot.hasPendingAttachmentWork) break;
+      }
+      clearUnconfirmedImageFileSelection(findComposer() || composer, expectedFileKey);
+      throw new Error("A kép feldolgozását a ChatGPT nem igazolta vissza időben. Ellenőrizd a csatolmányt az oldalon.");
+    }
+
+    function clearUnconfirmedImageFileSelection(composer, expectedFileKey) {
+      const snapshot = captureComposerAttachmentSnapshot(composer);
+      if (snapshot.hasAttachmentPreview || snapshot.hasPendingAttachmentWork) return;
+      const scope = findComposerScope(composer);
+      const inputs = new Set([
+        ...Array.from(scope?.querySelectorAll('input[type="file"]') || []),
+        findFileInput(document)
+      ]);
+      for (const input of inputs) {
+        if (!(input instanceof HTMLInputElement) || input.files?.length !== 1) continue;
+        if (describeSelectedFile(input.files[0]) !== expectedFileKey) continue;
+        try {
+          // Csak a saját, vissza nem igazolt próbálkozás maradványát töröljük.
+          // A change esemény új feltöltést indíthatna, ezért nem küldünk eseményt.
+          input.value = "";
+          reportDiagnostic("attachment_selection_cleared", { ok: !input.files?.length });
+        } catch (_error) {
+          reportDiagnostic("attachment_selection_cleared", { ok: false });
+        }
+      }
     }
 
     function getImageUploadTimeoutMs() {
-      const responseTimeoutMs = Number(payload.responseTimeoutMs);
-
-      if (Number.isFinite(responseTimeoutMs) && responseTimeoutMs > 0) {
-        return responseTimeoutMs;
-      }
-
-      const pageReadyTimeoutMs = Number(payload.pageReadyTimeoutMs);
-      return Number.isFinite(pageReadyTimeoutMs) && pageReadyTimeoutMs > 0
-        ? pageReadyTimeoutMs
-        : 60000;
+      return Math.min(60000, Math.max(20, Number(payload.pageReadyTimeoutMs) || 25000));
     }
 
     function attachViaFileInput(composer, file) {
@@ -1194,6 +1244,11 @@
       const scope = findComposerScope(composer);
       const attachmentIndicators = collectAttachmentIndicators(scope);
       const selectedFileKeys = collectSelectedFileKeys(scope);
+      const sendButton = findSendButton(composer, { allowDisabled: true });
+      const hasAttachmentPreview = attachmentIndicators.some((element) => (
+        (element instanceof HTMLImageElement && Boolean(element.currentSrc || element.getAttribute("src")))
+        || Boolean(element.querySelector('img[src]'))
+      ));
 
       return {
         attachmentCount: attachmentIndicators.length,
@@ -1201,6 +1256,8 @@
         fileInputCount: selectedFileKeys.length,
         fileSelectionKey: selectedFileKeys.join("||"),
         selectedFileKeys,
+        hasAttachmentPreview,
+        sendButtonDisabled: sendButton instanceof HTMLButtonElement && sendButton.disabled,
         hasPendingAttachmentWork: hasPendingAttachmentWork(scope),
       };
     }
@@ -1241,6 +1298,9 @@
       return [
         Number(snapshot.count) || 0,
         String(snapshot.lastNodeId || ""),
+        String(snapshot.lastStableId || ""),
+        String(snapshot.lastUserKey || ""),
+        String(snapshot.responseUserKey || ""),
         String(snapshot.lastText || ""),
         snapshot.lastPending ? "1" : "0"
       ].join("|");
@@ -1256,6 +1316,8 @@
         String(snapshot.attachmentIndicatorKey || ""),
         Number(snapshot.fileInputCount) || 0,
         String(snapshot.fileSelectionKey || ""),
+        snapshot.hasAttachmentPreview ? "1" : "0",
+        snapshot.sendButtonDisabled ? "1" : "0",
         snapshot.hasPendingAttachmentWork ? "1" : "0"
       ].join("|");
     }
@@ -1368,7 +1430,8 @@
     }
 
     function isAttachmentReadySnapshot(snapshot) {
-      return hasAttachmentSnapshot(snapshot) && !snapshot.hasPendingAttachmentWork;
+      return Number(snapshot?.attachmentCount) > 0 && snapshot.hasAttachmentPreview === true
+        && !snapshot.hasPendingAttachmentWork && !snapshot.sendButtonDisabled;
     }
 
     async function waitForAttachmentReady(composer, beforeSnapshot, timeoutMs, expectedFileKey) {
@@ -1413,7 +1476,7 @@
       }
 
       const scope = findComposerScope(composer);
-      const hasAttachment = countAttachmentIndicators(scope) > 0 || countSelectedFiles(scope) > 0;
+      const hasAttachment = captureComposerAttachmentSnapshot(composer).hasAttachmentPreview;
       const sendButton = findSendButton(composer, { allowDisabled: true });
 
       if (!hasAttachment || hasPendingAttachmentWork(scope)) {
@@ -1497,6 +1560,7 @@
       const selectors = [
         'img[src^="blob:"]',
         'img[src^="data:image"]',
+        'img[src^="https:"]',
         '[data-testid*="attachment" i]',
         '[data-testid*="upload" i]',
         '[aria-label*="attachment" i]',
@@ -1572,24 +1636,11 @@
     }
 
     function isExpectedAttachmentReadySnapshot(snapshot, beforeSnapshot, expectedFileKey) {
-      if (!isAttachmentReadySnapshot(snapshot)) {
-        return false;
-      }
-
-      if (snapshotHasExpectedFile(snapshot, expectedFileKey)) {
-        return true;
-      }
-
-      if (!beforeSnapshot || typeof beforeSnapshot !== "object") {
-        return false;
-      }
-
-      if (!hasAttachmentSnapshot(beforeSnapshot) && hasAttachmentSnapshot(snapshot)) {
-        return true;
-      }
-
+      if (!isAttachmentReadySnapshot(snapshot) || !beforeSnapshot) return false;
+      // Ha az oldal megőrizte a fájlkiválasztást, annak az aktuális képhez kell tartoznia.
+      if (Number(snapshot.fileInputCount) > 0 && !snapshotHasExpectedFile(snapshot, expectedFileKey)) return false;
       return Number(snapshot.attachmentCount) > Number(beforeSnapshot.attachmentCount)
-        || Number(snapshot.fileInputCount) > Number(beforeSnapshot.fileInputCount);
+        || (Number(snapshot.attachmentCount) > 0 && snapshot.attachmentIndicatorKey !== beforeSnapshot.attachmentIndicatorKey);
     }
 
     function hasPendingAttachmentWork(scope) {
@@ -1602,7 +1653,6 @@
         '[role="progressbar"]',
         '[data-state="uploading"]',
         '[data-status="uploading"]',
-        '[data-testid*="upload" i]',
         '[class*="uploading"]',
         '[class*="progress"]'
       ];
@@ -1693,39 +1743,91 @@
       return null;
     }
 
+    function getMessageStableId(node) {
+      if (!(node instanceof HTMLElement)) return "";
+      const messageNode = node.hasAttribute("data-message-id") ? node : node.closest("[data-message-id]");
+      const messageId = messageNode?.getAttribute("data-message-id");
+      if (messageId) return `message:${messageId}`;
+      const turnNode = node.closest('[data-testid^="conversation-turn-"], [data-turn-id]');
+      const turnId = turnNode?.getAttribute("data-turn-id") || turnNode?.getAttribute("data-testid");
+      return turnId ? `turn:${turnId}` : "";
+    }
+
+    function getMessageKey(node) {
+      return getMessageStableId(node) || (node ? `dom:${getDomNodeId(node)}` : "");
+    }
+
     function captureAssistantSnapshot() {
       const assistantNodes = findAssistantMessageNodes();
+      const userNodes = findUserMessageNodes();
+      const lastUser = userNodes.at(-1) || null;
       let lastEntry = null;
-
       for (let index = assistantNodes.length - 1; index >= 0; index -= 1) {
         const node = assistantNodes[index];
         const pending = isAssistantResponsePending(node);
         const text = normalizeWhitespace(extractAssistantText(node));
-
-        if (!text && !pending) {
-          continue;
-        }
-
-        lastEntry = {
-          nodeId: getDomNodeId(node),
-          text,
-          pending
-        };
+        if (!text && !pending) continue;
+        // A tényleges DOM-sorrend köti a választ az előtte álló felhasználói körhöz.
+        // Egy korábbi válasz újrarajzolása nem kerülhet az új kérés eredményei közé.
+        const precedingUser = [...userNodes].reverse().find((userNode) => (
+          typeof userNode.compareDocumentPosition === "function"
+          && Boolean(userNode.compareDocumentPosition(node) & 4)
+          && !Boolean(userNode.compareDocumentPosition(node) & 1)
+        ));
+        lastEntry = { nodeId: getDomNodeId(node), stableId: getMessageStableId(node), userKey: getMessageKey(precedingUser), text, pending };
         break;
       }
-
       return {
         count: assistantNodes.length,
         lastNodeId: lastEntry?.nodeId || "",
+        lastStableId: lastEntry?.stableId || "",
         lastText: lastEntry?.text || "",
-        lastPending: Boolean(lastEntry?.pending)
+        lastPending: Boolean(lastEntry?.pending),
+        responseUserKey: lastEntry?.userKey || "",
+        userCount: userNodes.length,
+        lastUserKey: getMessageKey(lastUser),
+        lastUserStableId: getMessageStableId(lastUser),
+        lastUserNodeId: lastUser ? getDomNodeId(lastUser) : "",
+        userKeys: userNodes.map(getMessageKey),
+        userNodeIds: userNodes.map(getDomNodeId),
+        userStableIds: userNodes.map(getMessageStableId).filter(Boolean),
+        assistantNodeIds: assistantNodes.map(getDomNodeId),
+        assistantStableIds: assistantNodes.map(getMessageStableId).filter(Boolean)
       };
+    }
+
+    function bindResponseUserTurn(previousSnapshot, currentSnapshot) {
+      if (previousSnapshot.requestUserKey) return;
+      const previousKeys = previousSnapshot.userKeys || [];
+      let nextKey = "";
+      if (!previousSnapshot.lastUserKey) {
+        nextKey = currentSnapshot.userKeys?.[0] || "";
+      } else if (previousSnapshot.lastUserStableId && currentSnapshot.lastUserStableId) {
+        const previousIndex = (currentSnapshot.userKeys || []).indexOf(previousSnapshot.lastUserKey);
+        nextKey = previousIndex >= 0
+          ? currentSnapshot.userKeys?.[previousIndex + 1] || ""
+          : (!previousKeys.includes(currentSnapshot.lastUserKey) ? currentSnapshot.lastUserKey : "");
+      } else {
+        // Stabil azonosító hiányában a régi felhasználói node megmaradása igazol
+        // új kört. A teljes DOM újrarajzolása és a virtualizáció önmagában nem.
+        const previousIndex = (currentSnapshot.userNodeIds || []).indexOf(previousSnapshot.lastUserNodeId);
+        if (previousIndex >= 0) nextKey = currentSnapshot.userKeys?.[previousIndex + 1] || "";
+      }
+      if (nextKey) previousSnapshot.requestUserKey = nextKey;
     }
 
     async function waitForAssistantResponse(previousSnapshot, timeoutMs, reportProgress) {
       let observedSnapshot = captureAssistantSnapshot();
       let latestUsableSnapshot = null;
       const startedAt = Date.now();
+      const recordSnapshot = (snapshot) => reportDiagnostic("response_snapshot", {
+        assistant_count: snapshot.count, user_count: snapshot.userCount, text_length: String(snapshot.lastText || "").length,
+        pending: snapshot.lastPending, has_identity: Boolean(snapshot.lastStableId),
+        fresh: isFreshAssistantSnapshot(snapshot, previousSnapshot), stable: isStableAssistantSnapshot(snapshot),
+        elapsed_ms: Date.now() - startedAt
+      });
+      reportDiagnostic("response_wait_started", { timeout_ms: timeoutMs });
+      recordSnapshot(observedSnapshot);
 
       while (Date.now() - startedAt < timeoutMs) {
         if (isUsableAssistantSnapshot(observedSnapshot, previousSnapshot)) {
@@ -1760,9 +1862,11 @@
         }
 
         observedSnapshot = nextSnapshot;
+        recordSnapshot(observedSnapshot);
       }
 
       const finalSnapshot = captureAssistantSnapshot();
+      recordSnapshot(finalSnapshot);
       if (isFreshAssistantSnapshot(finalSnapshot, previousSnapshot) && isStableAssistantSnapshot(finalSnapshot)) {
         const followUpProgressCallId = startAssistantResponseFollowUp(previousSnapshot, finalSnapshot);
         reportAssistantSnapshotProgress(finalSnapshot, reportProgress);
@@ -1783,7 +1887,7 @@
         };
       }
 
-      if (latestUsableSnapshot) {
+      if (latestUsableSnapshot && finalSnapshot.lastUserKey === previousSnapshot.requestUserKey) {
         const followUpProgressCallId = startAssistantResponseFollowUp(previousSnapshot, latestUsableSnapshot);
         reportAssistantSnapshotProgress(latestUsableSnapshot, reportProgress);
         return {
@@ -1793,41 +1897,47 @@
         };
       }
 
+      const followUpProgressCallId = startAssistantResponseFollowUp(previousSnapshot, null);
+      reportDiagnostic("response_timeout", { elapsed_ms: Date.now() - startedAt, late: Boolean(followUpProgressCallId) });
+      if (followUpProgressCallId) return { text: "", copied: false, responsePending: true, followUpProgressCallId };
       throw new Error("A ChatGPT válasza nem érkezett meg időben.");
     }
 
     function startAssistantResponseFollowUp(previousSnapshot, initialSnapshot) {
       const baseProgressCallId = String(payload.progressCallId || "").trim();
 
-      if (!baseProgressCallId || !isUsableAssistantSnapshot(initialSnapshot, previousSnapshot)) {
+      if (!baseProgressCallId || (initialSnapshot && !isUsableAssistantSnapshot(initialSnapshot, previousSnapshot))) {
         return "";
       }
 
       const followUpProgressCallId = `${baseProgressCallId}-followup`;
       const domTracker = ensureDomActivityTracker();
       const followUps = ensureAssistantResponseFollowUps();
-      const startUserCount = findUserMessageNodes().length;
       const followUpState = {
         stopped: false,
         previousSnapshot,
-        latestText: String(initialSnapshot.lastText || ""),
-        latestNodeId: String(initialSnapshot.lastNodeId || ""),
-        startUserCount,
+        latestText: String(initialSnapshot?.lastText || ""),
+        latestNodeId: String(initialSnapshot?.lastNodeId || ""),
         startedAt: Date.now(),
         timeoutId: 0,
         unsubscribe: null
       };
 
       stopAssistantResponseFollowUp(followUpProgressCallId, { emitDone: false });
+      reportDiagnostic("response_watch_started", { late: !initialSnapshot, timeout_ms: ASSISTANT_RESPONSE_FOLLOW_UP_MAX_MS });
 
       const scheduleFollowUpStop = (delayMs) => {
         if (followUpState.timeoutId) {
           window.clearTimeout(followUpState.timeoutId);
         }
 
-        const boundedDelayMs = Math.max(FRAME_INTERVAL_MS, Number(delayMs) || ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS);
+        const boundedDelayMs = Math.min(
+          Math.max(FRAME_INTERVAL_MS, ASSISTANT_RESPONSE_FOLLOW_UP_MAX_MS - (Date.now() - followUpState.startedAt)),
+          Math.max(FRAME_INTERVAL_MS, Number(delayMs) || ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS)
+        );
         followUpState.timeoutId = window.setTimeout(() => {
           followUpState.timeoutId = 0;
+          reportDiagnostic("response_watch_finished", { elapsed_ms: Date.now() - followUpState.startedAt });
           stopAssistantResponseFollowUp(followUpProgressCallId);
         }, boundedDelayMs);
       };
@@ -1842,12 +1952,13 @@
           return;
         }
 
-        if (findUserMessageNodes().length > startUserCount) {
+        const currentSnapshot = captureAssistantSnapshot();
+        bindResponseUserTurn(previousSnapshot, currentSnapshot);
+        if (previousSnapshot.requestUserKey && currentSnapshot.lastUserKey !== previousSnapshot.requestUserKey) {
+          reportDiagnostic("response_watch_finished", { reason: "user_turn_changed", elapsed_ms: Date.now() - followUpState.startedAt });
           stopAssistantResponseFollowUp(followUpProgressCallId);
           return;
         }
-
-        const currentSnapshot = captureAssistantSnapshot();
 
         if (!isUsableAssistantSnapshot(currentSnapshot, previousSnapshot)) {
           return;
@@ -1871,6 +1982,7 @@
           kind: "assistant_response",
           text: currentSnapshot.lastText
         });
+        reportDiagnostic("response_received", { late: !initialSnapshot, text_length: String(currentSnapshot.lastText || "").length, pending: currentSnapshot.lastPending });
         scheduleFollowUpStop(
           currentSnapshot.lastPending
             ? ASSISTANT_RESPONSE_FOLLOW_UP_IDLE_MS
@@ -1881,25 +1993,21 @@
       followUpState.unsubscribe = domTracker.subscribe(evaluateFollowUp);
       followUps[followUpProgressCallId] = followUpState;
       scheduleFollowUpStop(
-        initialSnapshot.lastPending
-          ? ASSISTANT_RESPONSE_FOLLOW_UP_IDLE_MS
-          : ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS
+        !initialSnapshot ? ASSISTANT_RESPONSE_FOLLOW_UP_MAX_MS
+          : initialSnapshot.lastPending ? ASSISTANT_RESPONSE_FOLLOW_UP_IDLE_MS : ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS
       );
       return followUpProgressCallId;
     }
 
     function isFreshAssistantSnapshot(currentSnapshot, previousSnapshot) {
-      if (!currentSnapshot || typeof currentSnapshot !== "object") {
-        return false;
+      if (!currentSnapshot || !previousSnapshot || !currentSnapshot.lastText) return false;
+      bindResponseUserTurn(previousSnapshot, currentSnapshot);
+      const requestUserKey = previousSnapshot.requestUserKey;
+      if (!requestUserKey || currentSnapshot.lastUserKey !== requestUserKey || currentSnapshot.responseUserKey !== requestUserKey) return false;
+      if (currentSnapshot.lastStableId) {
+        return !(previousSnapshot.assistantStableIds || []).includes(currentSnapshot.lastStableId);
       }
-
-      const candidate = currentSnapshot.lastText;
-      return Boolean(candidate)
-        && (
-          currentSnapshot.count > previousSnapshot.count
-          || currentSnapshot.lastNodeId !== previousSnapshot.lastNodeId
-          || candidate !== previousSnapshot.lastText
-        );
+      return !(previousSnapshot.assistantNodeIds || []).includes(currentSnapshot.lastNodeId);
     }
 
     function isStableAssistantSnapshot(snapshot) {
@@ -1947,6 +2055,7 @@
         kind: "assistant_response",
         text: snapshot.lastText
       });
+      reportDiagnostic("response_received", { late: false, text_length: snapshot.lastText.length, pending: snapshot.lastPending });
     }
 
     function isTransientAssistantText(text) {
@@ -2972,6 +3081,7 @@
         }
 
         armSubmissionRetryGuard(liveComposer, afterState);
+        reportDiagnostic("submission_retry", { attempt: checkIndex + 1, attachment_count: afterState.attachmentCount, file_count: afterState.fileInputCount, pending: afterState.hasPendingAttachmentWork });
         attempt.run(liveComposer);
         await waitForSubmissionTransition(
           beforeState,
@@ -3032,7 +3142,7 @@
 
       const scope = findComposerScope(composer);
       const hasPrompt = Boolean(normalizePromptStructure(readComposerText(composer)));
-      const hasAttachment = countAttachmentIndicators(scope) > 0 || countSelectedFiles(scope) > 0;
+      const hasAttachment = captureComposerAttachmentSnapshot(composer).hasAttachmentPreview;
 
       return hasPrompt || hasAttachment;
     }

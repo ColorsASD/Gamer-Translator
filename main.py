@@ -4,9 +4,20 @@ import argparse
 import hashlib
 import os
 import sys
+import tempfile
+import time
 from pathlib import Path
+from typing import Callable
 
-from gamer_translator.defaults import APP_NAME
+from gamer_translator.defaults import APP_NAME, APP_VERSION
+from gamer_translator.diagnostics import (
+    install_exception_hooks,
+    log_event,
+    log_exception,
+    resource_snapshot,
+    setup_diagnostics,
+    shutdown_diagnostics,
+)
 from gamer_translator.settings_store import AppSettings, SettingsStore, default_app_data_dir
 
 
@@ -81,9 +92,41 @@ def configure_webengine_environment(settings: AppSettings | None = None) -> None
     os.environ.pop("QTWEBENGINE_CHROMIUM_FLAGS", None)
 
 
-from PySide6.QtCore import QLockFile, QObject, Signal
-from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication
+def _report_qt_import_failure(error: BaseException) -> int:
+    # A Qt DLL betöltése az alkalmazásindítás előtt is elbukhat. Ilyenkor
+    # kizárólag a Python naplózója fut; sem Qt, sem normál tesztprofil nem kell.
+    arguments = sys.argv[1:]
+    self_test = any(argument == "--self-test-report" or argument.startswith("--self-test-report=") for argument in arguments)
+    mode = "self_test" if self_test else "staging" if "--staging" in arguments else "normal"
+
+    def record_failure(root_dir: Path) -> None:
+        try:
+            setup_diagnostics(root_dir, app_version=APP_VERSION)
+            log_exception("app.qt_import_failed", error, mode=mode)
+            log_event("app.exit", level="ERROR", mode=mode, code=1, result="nonzero")
+        finally:
+            shutdown_diagnostics()
+
+    try:
+        if mode == "normal":
+            record_failure(default_app_data_dir())
+        else:
+            with tempfile.TemporaryDirectory(prefix="gamer-translator-test-diagnostics-") as directory:
+                record_failure(Path(directory))
+    except Exception:
+        # A naplókönyvtár hibája sem helyettesítheti az eredeti indulási hibát.
+        pass
+    return 1
+
+
+try:
+    from PySide6.QtCore import QLockFile, QObject, Signal, qInstallMessageHandler
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket
+    from PySide6.QtWidgets import QApplication
+except (ImportError, OSError) as error:
+    if __name__ == "__main__":
+        raise SystemExit(_report_qt_import_failure(error)) from None
+    raise
 
 class SingleInstanceController(QObject):
     activation_requested = Signal()
@@ -101,9 +144,12 @@ class SingleInstanceController(QObject):
     def ensure_primary_instance(self) -> bool:
         # Windows alatt két QLocalServer is hallgathat ugyanazon a néven.
         if not self.instance_lock.tryLock(0):
+            log_event("instance.lock_busy")
             if self._notify_existing_instance(timeout_ms=1000):
+                log_event("instance.activation_sent")
                 return False
 
+            log_event("instance.activation_unavailable", level="WARNING", timeout_ms=1000)
             raise RuntimeError("A másik programpéldány még indul, vagy nem válaszol.")
 
         QLocalServer.removeServer(self.server_name)
@@ -112,9 +158,11 @@ class SingleInstanceController(QObject):
 
         if not self.server.listen(self.server_name):
             self.instance_lock.unlock()
+            log_event("instance.server_failed", level="ERROR")
             raise RuntimeError("A programpéldány figyelése nem indítható el.")
 
         self.server.newConnection.connect(self._handle_new_connection)
+        log_event("instance.primary_ready")
         return True
 
     def _notify_existing_instance(self, timeout_ms: int = 250) -> bool:
@@ -144,7 +192,60 @@ class SingleInstanceController(QObject):
 
             socket.disconnectFromServer()
             socket.deleteLater()
+            log_event("instance.activation_received")
             self.activation_requested.emit()
+
+
+def _handle_qt_message(message_type, _context, message: str) -> None:
+    # Qt üzenetek URL-t, DOM-tartalmat és helyi fájlnevet is tartalmazhatnak.
+    # Csak a súlyosságot és a hosszt őrizzük meg, a forrást és szöveget nem.
+    severity = int(message_type.value)
+    level = {0: "DEBUG", 1: "WARNING", 2: "ERROR", 3: "CRITICAL", 4: "INFO"}.get(severity, "WARNING")
+    log_event("qt.message", level=level, source="qt", code=severity, text_length=len(message))
+
+
+def _run_with_diagnostics(root_dir: Path, mode: str, runner: Callable[[], int]) -> int:
+    setup_diagnostics(root_dir, app_version=APP_VERSION)
+    install_exception_hooks()
+    previous_qt_handler = qInstallMessageHandler(_handle_qt_message)
+    started = time.monotonic()
+    result = 1
+    log_event("app.start", mode=mode, **resource_snapshot())
+
+    try:
+        result = int(runner())
+        return result
+    except Exception as error:
+        log_exception("app.startup_or_runtime_failed", error, mode=mode, **resource_snapshot())
+        return 1
+    finally:
+        log_event("app.exit", level="INFO" if result == 0 else "ERROR", mode=mode,
+                  code=result, result="completed" if result == 0 else "nonzero",
+                  duration_ms=round((time.monotonic() - started) * 1000), **resource_snapshot())
+        qInstallMessageHandler(previous_qt_handler)
+        shutdown_diagnostics()
+
+
+def _run_normal() -> int:
+    configure_webengine_environment()
+    log_event("app.webengine_configured", mode="normal")
+
+    from gamer_translator.main_window import MainWindow
+
+    app = QApplication(sys.argv)
+    app.setApplicationDisplayName(APP_NAME)
+    log_event("app.qt_ready")
+
+    single_instance = SingleInstanceController("GamerTranslatorDesktopSingleton")
+
+    if not single_instance.ensure_primary_instance():
+        return 0
+
+    window = MainWindow()
+    single_instance.activation_requested.connect(window.show_from_external_request)
+    window.show()
+    log_event("app.window_ready")
+    return app.exec()
 
 
 def main() -> int:
@@ -164,28 +265,15 @@ def main() -> int:
         configure_webengine_environment(AppSettings(webview_gpu_acceleration_enabled=False))
         if args.self_test_report is not None:
             os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        from gamer_translator.self_test import run_self_test, run_staging
-        return run_self_test(args.self_test_report, args.self_test_duration, args.self_test_model_dir) if args.self_test_report else run_staging()
+        def run_test_mode() -> int:
+            from gamer_translator.self_test import run_self_test, run_staging
+            return run_self_test(args.self_test_report, args.self_test_duration, args.self_test_model_dir) if args.self_test_report else run_staging()
 
-    configure_webengine_environment()
+        # Az önteszt saját naplója sem érintheti az éles profil állapotát.
+        with tempfile.TemporaryDirectory(prefix="gamer-translator-test-diagnostics-") as directory:
+            return _run_with_diagnostics(Path(directory), "self_test" if args.self_test_report else "staging", run_test_mode)
 
-    from gamer_translator.main_window import MainWindow
-
-    app = QApplication(sys.argv)
-    app.setApplicationDisplayName(APP_NAME)
-
-    single_instance = SingleInstanceController("GamerTranslatorDesktopSingleton")
-
-    try:
-        if not single_instance.ensure_primary_instance():
-            return 0
-    except RuntimeError:
-        return 1
-
-    window = MainWindow()
-    single_instance.activation_requested.connect(window.show_from_external_request)
-    window.show()
-    return app.exec()
+    return _run_with_diagnostics(default_app_data_dir(), "normal", _run_normal)
 
 
 if __name__ == "__main__":

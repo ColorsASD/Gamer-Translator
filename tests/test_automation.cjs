@@ -12,6 +12,10 @@ const helperNames = [
   'readStructuredDomText', 'writePrompt', 'findComposer', 'findSendButton',
   'captureComposerSubmitState', 'isGenerationInProgress', 'submitTextMessage',
   'waitForAssistantResponse', 'isComposerReadyForSubmit',
+  'captureAssistantSnapshot', 'isFreshAssistantSnapshot', 'findAssistantMessageNodes', 'findUserMessageNodes',
+  'isAssistantResponsePending', 'isExpectedAttachmentReadySnapshot', 'isAttachmentReadySnapshot',
+  'attachImage', 'attachViaFileInput', 'attachViaDrop', 'captureComposerAttachmentSnapshot',
+  'isImageReadyForSubmit', 'writeDiagnosticEntry',
 ];
 // Csak a tesztpéldány kap hozzáférést a belső függvényekhez; az éles forrás nem exportál teszt API-t.
 const hook = helperNames.map((name) => `
@@ -37,6 +41,14 @@ class FakeNode {
   get parentElement() { return this.parentNode instanceof FakeElement ? this.parentNode : null; }
   get textContent() { return this.childNodes.map((child) => child.textContent).join(''); }
   contains(node) { return this === node || this.childNodes.some((child) => child.contains(node)); }
+  compareDocumentPosition(node) {
+    const root = (entry) => { while (entry.parentNode) entry = entry.parentNode; return entry; };
+    if (root(this) !== root(node)) return 1;
+    const ordered = [];
+    const walk = (entry) => { ordered.push(entry); for (const child of entry.childNodes) walk(child); };
+    walk(root(this));
+    return ordered.indexOf(this) < ordered.indexOf(node) ? 4 : this === node ? 0 : 2;
+  }
 }
 class FakeText extends FakeNode {
   constructor(value) { super(); this.value = value; }
@@ -314,4 +326,252 @@ test('A megfigyelő leállítása törli a függő helyreállítás időzítőj�
   harness.window.__gamerTranslatorComposerAutoRecovery.destroy();
   await harness.advance(5000);
   assert.equal(retries, 0);
+});
+
+
+function appendMessage(harness, id, text) {
+  const message = harness.document.body.appendChild(new FakeElement('div'));
+  message.setAttribute('data-message-id', id);
+  message.appendChild(new FakeText(text));
+  return message;
+}
+
+function conversationHarness() {
+  const users = [];
+  const assistants = [];
+  const harness = createHarness({ overrides: {
+    findUserMessageNodes: () => users,
+    findAssistantMessageNodes: () => assistants,
+    isAssistantResponsePending: () => false,
+  } });
+  return { harness, users, assistants };
+}
+
+test('Régi válasz és user kör újrarajzolása nem ad friss fordítást', () => {
+  const { harness, users, assistants } = conversationHarness();
+  users.push(appendMessage(harness, 'user-old', 'Korábbi kérés'));
+  assistants.push(appendMessage(harness, 'answer-old', 'Korábbi válasz'));
+  const previous = harness.helpers.captureAssistantSnapshot();
+  users[0] = appendMessage(harness, 'user-old', 'Korábbi kérés');
+  assistants[0] = appendMessage(harness, 'answer-old', 'Korábbi válasz');
+  let current = harness.helpers.captureAssistantSnapshot();
+  assert.notEqual(current.lastNodeId, previous.lastNodeId);
+  assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), false);
+  assistants.push(appendMessage(harness, 'answer-other-old', 'Eltérő régi szöveg'));
+  current = harness.helpers.captureAssistantSnapshot();
+  assert.equal(current.count > previous.count, true);
+  assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), false);
+});
+
+test('Azonos fordítás egy valóban új user körhöz érvényes eredmény', () => {
+  const { harness, users, assistants } = conversationHarness();
+  users.push(appendMessage(harness, 'user-1', 'Kérés'));
+  assistants.push(appendMessage(harness, 'answer-1', 'Azonos fordítás'));
+  const previous = harness.helpers.captureAssistantSnapshot();
+  users.push(appendMessage(harness, 'user-2', 'Másik kérés'));
+  assert.equal(harness.helpers.isFreshAssistantSnapshot(harness.helpers.captureAssistantSnapshot(), previous), false,
+    'A korábbi válasz az új user üzenet előtt van.');
+  assistants.push(appendMessage(harness, 'answer-2', 'Azonos fordítás'));
+  assert.equal(harness.helpers.isFreshAssistantSnapshot(harness.helpers.captureAssistantSnapshot(), previous), true);
+  users.push(appendMessage(harness, 'user-3', 'Kézzel beküldött másik kérés'));
+  assistants.push(appendMessage(harness, 'answer-3', 'Másik fordítás'));
+  assert.equal(harness.helpers.isFreshAssistantSnapshot(harness.helpers.captureAssistantSnapshot(), previous), false,
+    'A már azonosított kéréshez másik user kör válasza nem vehető át.');
+});
+
+test('Virtualizált beszélgetésben a stabil üzenetazonosító köti az új választ', () => {
+  const { harness, users, assistants } = conversationHarness();
+  users.push(appendMessage(harness, 'user-1', 'Kérés'));
+  assistants.push(appendMessage(harness, 'answer-1', 'Azonos fordítás'));
+  const previous = harness.helpers.captureAssistantSnapshot();
+  users.splice(0, users.length, appendMessage(harness, 'user-2', 'Kérés'));
+  assistants.splice(0, assistants.length, appendMessage(harness, 'answer-2', 'Azonos fordítás'));
+  const current = harness.helpers.captureAssistantSnapshot();
+  assert.equal(current.count, previous.count);
+  assert.equal(current.userCount, previous.userCount);
+  assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), true);
+});
+
+test('Stabil azonosító nélküli teljes DOM-csere önmagában nem friss eredmény', () => {
+  const { harness, users, assistants } = conversationHarness();
+  const user = appendMessage(harness, 'old', 'Kérés');
+  const answer = appendMessage(harness, 'old-answer', 'Fordítás');
+  user.attributes.delete('data-message-id'); answer.attributes.delete('data-message-id');
+  users.push(user); assistants.push(answer);
+  const previous = harness.helpers.captureAssistantSnapshot();
+  const newUser = appendMessage(harness, 'replacement', 'Kérés');
+  const newAnswer = appendMessage(harness, 'replacement-answer', 'Fordítás');
+  newUser.attributes.delete('data-message-id'); newAnswer.attributes.delete('data-message-id');
+  users[0] = newUser; assistants[0] = newAnswer;
+  assert.equal(harness.helpers.isFreshAssistantSnapshot(harness.helpers.captureAssistantSnapshot(), previous), false);
+});
+
+test('Kép input.files beállítása és változatlan régi preview nem igazol csatolást', () => {
+  const harness = createHarness();
+  const before = { attachmentCount: 0, attachmentIndicatorKey: '', fileInputCount: 0, selectedFileKeys: [], hasPendingAttachmentWork: false };
+  const selectedOnly = { ...before, fileInputCount: 1, selectedFileKeys: ['expected'] };
+  assert.equal(harness.helpers.isAttachmentReadySnapshot(selectedOnly), false);
+  assert.equal(harness.helpers.isExpectedAttachmentReadySnapshot(selectedOnly, before, 'expected'), false);
+  assert.equal(harness.helpers.isExpectedAttachmentReadySnapshot({ ...selectedOnly, attachmentCount: 1, attachmentIndicatorKey: 'static-upload-wrapper', hasAttachmentPreview: false }, before, 'expected'), false);
+  const ready = { ...selectedOnly, attachmentCount: 1, attachmentIndicatorKey: 'new-preview', hasAttachmentPreview: true };
+  assert.equal(harness.helpers.isExpectedAttachmentReadySnapshot(ready, before, 'expected'), true);
+  assert.equal(harness.helpers.isExpectedAttachmentReadySnapshot({ ...ready, hasPendingAttachmentWork: true }, before, 'expected'), false);
+  assert.equal(harness.helpers.isExpectedAttachmentReadySnapshot({ ...ready, sendButtonDisabled: true }, before, 'expected'), false);
+  assert.equal(harness.helpers.isExpectedAttachmentReadySnapshot(ready, before, 'different-file'), false);
+  assert.equal(harness.helpers.isExpectedAttachmentReadySnapshot(ready, ready, 'expected'), false);
+  assert.equal(harness.helpers.isExpectedAttachmentReadySnapshot({ ...ready, fileInputCount: 0, selectedFileKeys: [] }, before, 'expected'), true);
+});
+
+test('Aszinkron képbeillesztés csak a teljes timeout után használ egyszeri drop fallbacket', async () => {
+  let inputCount = 0; let dropCount = 0; let selectedKey = ''; let preview = false;
+  const harness = createHarness({ overrides: {
+    captureComposerAttachmentSnapshot: () => ({ attachmentCount: preview ? 2 : 1, attachmentIndicatorKey: preview ? 'static-wrapper|preview' : 'static-wrapper', hasAttachmentPreview: preview, fileInputCount: selectedKey ? 1 : 0, selectedFileKeys: selectedKey ? [selectedKey] : [], fileSelectionKey: selectedKey, hasPendingAttachmentWork: false }),
+    attachViaFileInput: (_composer, file) => { inputCount += 1; selectedKey = `${file.name}:${file.size}:${file.type}:${file.lastModified}`; return true; },
+    attachViaDrop: () => { dropCount += 1; preview = true; return true; },
+  } });
+  const pending = harness.window.__gamerTranslatorDeliver({ imageDataUrl: 'data:image/png;base64,aGVsbG8=', pageReadyTimeoutMs: 40, diagnosticCallId: 'image-test' });
+  await harness.advance(20);
+  assert.equal(inputCount, 1); assert.equal(dropCount, 0);
+  await harness.advance(20);
+  const result = await pending;
+  assert.equal(result.ok, true); assert.equal(dropCount, 1);
+  const events = harness.window.__gamerTranslatorDiagnostics['image-test'].map((entry) => entry.event);
+  assert.equal(events.includes('attachment_timeout'), true);
+  assert.equal(events.includes('attachment_ready'), true);
+});
+
+test('Aktív képfeldolgozás timeoutja nem indít újabb feltöltést', async () => {
+  let inputCount = 0; let dropCount = 0; let selectedKey = '';
+  const harness = createHarness({ overrides: {
+    captureComposerAttachmentSnapshot: () => ({ attachmentCount: 0, attachmentIndicatorKey: '', fileInputCount: selectedKey ? 1 : 0, selectedFileKeys: selectedKey ? [selectedKey] : [], fileSelectionKey: selectedKey, hasPendingAttachmentWork: Boolean(selectedKey) }),
+    attachViaFileInput: (_composer, file) => { inputCount += 1; selectedKey = `${file.name}:${file.size}:${file.type}:${file.lastModified}`; return true; },
+    attachViaDrop: () => { dropCount += 1; return true; },
+  } });
+  const pending = harness.window.__gamerTranslatorDeliver({ imageDataUrl: 'data:image/png;base64,aGVsbG8=', pageReadyTimeoutMs: 40 });
+  await harness.advance(40);
+  assert.equal((await pending).ok, false); assert.equal(inputCount, 1); assert.equal(dropCount, 0);
+});
+
+test('Válasz timeout után a késői eredmény ugyanahhoz a kéréshez érkezhet', async () => {
+  const { harness, users, assistants } = conversationHarness();
+  const callbacks = new Set();
+  harness.window.__gamerTranslatorDomTracker.subscribe = (callback) => { callbacks.add(callback); return () => callbacks.delete(callback); };
+  harness.window.__testOverrides.submitTextMessage = async () => { users.push(appendMessage(harness, 'user-late', 'Kérés')); };
+  const pending = harness.window.__gamerTranslatorDeliver({ prompt: 'Kérés', autoSubmit: true, copyResponseToClipboard: true, responseTimeoutMs: 40, progressCallId: 'late-test', diagnosticCallId: 'late-diagnostics' });
+  await harness.advance(40);
+  const result = await pending;
+  assert.equal(result.ok, false); assert.equal(result.responsePending, true); assert.equal(result.followUpProgressCallId, 'late-test-followup');
+  assistants.push(appendMessage(harness, 'answer-late', 'Késői fordítás'));
+  for (const callback of [...callbacks]) callback();
+  const progress = JSON.parse(harness.window.__gamerTranslatorProgress['late-test-followup']);
+  assert.equal(progress.kind, 'assistant_response'); assert.equal(progress.text, 'Késői fordítás');
+  assert.equal(harness.window.__gamerTranslatorDiagnostics['late-diagnostics'].some((entry) => entry.event === 'response_received' && entry.fields.late), true);
+  users.push(appendMessage(harness, 'user-other', 'Másik kérés'));
+  assistants.push(appendMessage(harness, 'answer-other', 'Idegen válasz'));
+  for (const callback of [...callbacks]) callback();
+  const doneProgress = JSON.parse(harness.window.__gamerTranslatorProgress['late-test-followup']);
+  assert.equal(doneProgress.kind, 'assistant_response'); assert.equal(doneProgress.done, true);
+  assert.equal(doneProgress.text, 'Késői fordítás');
+  assert.equal(callbacks.size, 0);
+});
+
+test('Üres kezdetű késői válaszfigyelés legfeljebb 120 másodpercig marad aktív', async () => {
+  const { harness, users } = conversationHarness();
+  harness.window.__testOverrides.submitTextMessage = async () => { users.push(appendMessage(harness, 'user-wait', 'Kérés')); };
+  const pending = harness.window.__gamerTranslatorDeliver({ prompt: 'Kérés', autoSubmit: true, copyResponseToClipboard: true, responseTimeoutMs: 40, progressCallId: 'bounded-test' });
+  await harness.advance(40);
+  assert.equal((await pending).responsePending, true);
+  await harness.advance(119999);
+  assert.equal(Boolean(harness.window.__gamerTranslatorAssistantResponseFollowUps['bounded-test-followup']), true);
+  await harness.advance(1);
+  assert.equal(harness.window.__gamerTranslatorAssistantResponseFollowUps['bounded-test-followup'], undefined);
+  assert.equal(JSON.parse(harness.window.__gamerTranslatorProgress['bounded-test-followup']).kind, 'assistant_response_watch_done');
+});
+
+test('Új kézbesítés leállítja a korábbi késői figyelést', async () => {
+  const { harness, users } = conversationHarness();
+  harness.window.__testOverrides.submitTextMessage = async () => { users.push(appendMessage(harness, 'user-first', 'Első kérés')); };
+  const pending = harness.window.__gamerTranslatorDeliver({ prompt: 'Első kérés', autoSubmit: true, copyResponseToClipboard: true, responseTimeoutMs: 40, progressCallId: 'first-test' });
+  await harness.advance(40);
+  assert.equal((await pending).responsePending, true);
+  assert.equal((await harness.window.__gamerTranslatorDeliver({ prompt: 'Második kérés', autoSubmit: false })).ok, true);
+  assert.equal(harness.window.__gamerTranslatorAssistantResponseFollowUps['first-test-followup'], undefined);
+});
+
+test('A diagnosztika korlátos és kizárja a szöveget, képet és URL-t', () => {
+  const harness = createHarness();
+  for (let index = 0; index < 150; index += 1) {
+    harness.helpers.writeDiagnosticEntry('diagnostic-test', 'response_snapshot', { text_length: index, prompt_text: 'titkos szöveg', imageDataUrl: 'data:image/png;base64,aGVsbG8=', url: 'https://example.com/private', reason: 'https://example.com/private', stage: 'response', pending: false });
+  }
+  const entries = harness.window.__gamerTranslatorDiagnostics['diagnostic-test'];
+  assert.equal(entries.length, 100); assert.equal(entries[0].fields.text_length, 50);
+  assert.deepEqual(Object.keys(entries[0].fields).sort(), ['pending', 'stage', 'text_length']);
+  const serialized = JSON.stringify(entries);
+  assert.equal(serialized.includes('titkos'), false); assert.equal(serialized.includes('data:image'), false); assert.equal(serialized.includes('https://'), false);
+  for (let index = 0; index < 30; index += 1) harness.helpers.writeDiagnosticEntry(`call-${index}`, 'composer_ready');
+  assert.equal(Object.keys(harness.window.__gamerTranslatorDiagnostics).length, 16);
+});
+
+
+test('Képfeltöltés teljes kudarca kitakarítja a saját fájlmezőt a következő kivágáshoz', async () => {
+  let input = null; let preview = false; let shouldSucceed = false;
+  const harness = createHarness({ overrides: {
+    captureComposerAttachmentSnapshot: () => {
+      const selected = Array.from(input?.files || []).map((file) => `${file.name}:${file.size}:${file.type}:${file.lastModified}`);
+      return { attachmentCount: preview ? 1 : 0, attachmentIndicatorKey: preview ? 'preview' : '', hasAttachmentPreview: preview, fileInputCount: selected.length, selectedFileKeys: selected, fileSelectionKey: selected.join('||'), hasPendingAttachmentWork: false };
+    },
+    attachViaFileInput: (_composer, file) => { input.files = [file]; preview = shouldSucceed; return true; },
+    attachViaDrop: () => true,
+  } });
+  input = harness.document.body.appendChild(new FakeInput('input')); input.type = 'file'; input.files = [];
+  Object.defineProperty(input, 'value', { get: () => '', set: (value) => { if (value === '') input.files = []; } });
+  harness.document.body.querySelectorAll = (selector) => selector === 'input[type="file"]' ? [input] : [];
+  const payload = { imageDataUrl: 'data:image/png;base64,aGVsbG8=', pageReadyTimeoutMs: 40, diagnosticCallId: 'cleanup-test' };
+  const failed = harness.window.__gamerTranslatorDeliver(payload);
+  await harness.advance(80);
+  assert.equal((await failed).ok, false); assert.equal(input.files.length, 0);
+  assert.equal(harness.window.__gamerTranslatorDiagnostics['cleanup-test'].some((entry) => entry.event === 'attachment_selection_cleared' && entry.fields.ok), true);
+  shouldSucceed = true;
+  assert.equal((await harness.window.__gamerTranslatorDeliver(payload)).ok, true);
+  assert.equal(input.files.length, 1, 'A sikeres csatolmány fájlmezőjét meg kell őrizni.');
+});
+
+test('Sikertelen várakozás valós preview vagy folyamatban levő feltöltés fájlját nem törli', async () => {
+  for (const mode of ['preview', 'pending']) {
+    let input = null;
+    const harness = createHarness({ overrides: {
+      captureComposerAttachmentSnapshot: () => {
+        const selected = Array.from(input?.files || []).map((file) => `${file.name}:${file.size}:${file.type}:${file.lastModified}`);
+        const present = Boolean(selected.length);
+        return { attachmentCount: present && mode === 'preview' ? 1 : 0, attachmentIndicatorKey: present && mode === 'preview' ? 'preview' : '', hasAttachmentPreview: present && mode === 'preview', sendButtonDisabled: present, fileInputCount: selected.length, selectedFileKeys: selected, fileSelectionKey: selected.join('||'), hasPendingAttachmentWork: present && mode === 'pending' };
+      },
+      attachViaFileInput: (_composer, file) => { input.files = [file]; return true; },
+      attachViaDrop: () => { throw new Error('Nem indulhat második feltöltés.'); },
+    } });
+    input = harness.document.body.appendChild(new FakeInput('input')); input.type = 'file'; input.files = [];
+    Object.defineProperty(input, 'value', { get: () => '', set: (value) => { if (value === '') input.files = []; } });
+    harness.document.body.querySelectorAll = (selector) => selector === 'input[type="file"]' ? [input] : [];
+    const pending = harness.window.__gamerTranslatorDeliver({ imageDataUrl: 'data:image/png;base64,aGVsbG8=', pageReadyTimeoutMs: 40 });
+    await harness.advance(40);
+    assert.equal((await pending).ok, false); assert.equal(input.files.length, 1, mode);
+  }
+});
+
+test('Késleltetett poll esetén a lezáró progress rekord megőrzi a késői végső választ', async () => {
+  const { harness, users, assistants } = conversationHarness();
+  const callbacks = new Set();
+  harness.window.__gamerTranslatorDomTracker.subscribe = (callback) => { callbacks.add(callback); return () => callbacks.delete(callback); };
+  harness.window.__testOverrides.submitTextMessage = async () => { users.push(appendMessage(harness, 'user-delayed-poll', 'Kérés')); };
+  const pending = harness.window.__gamerTranslatorDeliver({ prompt: 'Kérés', autoSubmit: true, copyResponseToClipboard: true, responseTimeoutMs: 40, progressCallId: 'delayed-poll' });
+  await harness.advance(40);
+  assert.equal((await pending).responsePending, true);
+  assistants.push(appendMessage(harness, 'answer-delayed-poll', 'A végső fordítás megmarad.'));
+  for (const callback of [...callbacks]) callback();
+  // A Python oldali poll ebben a 4 másodpercben egyáltalán nem olvassa a bucketet.
+  await harness.advance(4000);
+  const progress = JSON.parse(harness.window.__gamerTranslatorProgress['delayed-poll-followup']);
+  assert.equal(progress.done, true); assert.equal(progress.kind, 'assistant_response');
+  assert.equal(progress.text, 'A végső fordítás megmarad.');
+  assert.equal(harness.window.__gamerTranslatorAssistantResponseFollowUps['delayed-poll-followup'], undefined);
+  assert.equal(callbacks.size, 0);
 });

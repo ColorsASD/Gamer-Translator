@@ -10,6 +10,8 @@ import re
 import tempfile
 import time
 import unicodedata
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 from statistics import mean, median
@@ -24,9 +26,11 @@ from rapidocr.utils.download_file import DownloadFile, DownloadFileInput
 from rapidocr.utils.typings import TaskType
 from wordfreq import zipf_frequency
 
+from .diagnostics import log_event, log_exception
 from .settings_store import default_app_data_dir
 
 LOGGER = logging.getLogger("gamer_translator.ocr")
+_OCR_REQUEST_ID: ContextVar[str | None] = ContextVar("ocr_request_id", default=None)
 HUNGARIAN_WORD_PATTERN = re.compile(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]+")
 OCR_WORD_PATTERN = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*", re.UNICODE)
 FAST_VARIANT_NAMES = (
@@ -67,6 +71,33 @@ AMBIGUOUS_HUNGARIAN_GROUPS: dict[str, tuple[str, ...]] = {
     "ü": ("u", "ú", "ü", "ű"),
     "ű": ("u", "ú", "ü", "ű"),
 }
+
+
+def _log_ocr_event(event: str, **fields) -> None:
+    log_event(event, request_id=_OCR_REQUEST_ID.get(), **fields)
+
+
+def _log_ocr_exception(event: str, error: BaseException, **fields) -> None:
+    log_exception(event, error, request_id=_OCR_REQUEST_ID.get(), **fields)
+
+
+@contextmanager
+def _ocr_request(request_id: str | None, image_bytes: bytes, requested_count: int):
+    token = _OCR_REQUEST_ID.set(request_id)
+    started = time.monotonic()
+    success = False
+    try:
+        _log_ocr_event("ocr.started", image_bytes=len(image_bytes) if isinstance(image_bytes, (bytes, bytearray, memoryview)) else 0,
+                       count=requested_count)
+        yield
+        success = True
+    except Exception as error:
+        _log_ocr_exception("ocr.failed", error, duration_ms=round((time.monotonic() - started) * 1000))
+        raise
+    finally:
+        _log_ocr_event("ocr.finished", success=success, duration_ms=round((time.monotonic() - started) * 1000))
+        _OCR_REQUEST_ID.reset(token)
+
 
 try:
     from winrt.windows.globalization import Language
@@ -113,32 +144,41 @@ class OCRService:
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self.engine: RapidOCR | None = None
         self.windows_language_tags = self._resolve_windows_language_tags()
+        _log_ocr_event("ocr.service_ready", engine="windows_ocr", count=len(self.windows_language_tags))
 
-    def extract_text(self, image_bytes: bytes) -> str:
-        candidates = self._collect_ranked_candidates(image_bytes)
+    def extract_text(self, image_bytes: bytes, *, request_id: str | None = None) -> str:
+        with _ocr_request(request_id, image_bytes, 1):
+            candidates = self._collect_ranked_candidates(image_bytes)
 
-        if not candidates:
-            raise RuntimeError("A képről nem sikerült kiolvasni olvasható szöveget.")
+            if not candidates:
+                raise RuntimeError("A képről nem sikerült kiolvasni olvasható szöveget.")
 
-        return candidates[0].text
+            _log_ocr_event("ocr.result_ready", count=len(candidates), text_length=len(candidates[0].text),
+                           engine="windows_ocr" if candidates[0].engine_name.startswith("Windows OCR") else "rapidocr")
+            return candidates[0].text
 
-    def extract_text_candidates(self, image_bytes: bytes, limit: int | None = None) -> tuple[str, ...]:
+    def extract_text_candidates(self, image_bytes: bytes, limit: int | None = None, *, request_id: str | None = None) -> tuple[str, ...]:
         desired_count = DEFAULT_OCR_CANDIDATE_COUNT if limit is None or limit <= 0 else max(1, int(limit))
-        candidates = self._collect_ranked_candidates(image_bytes, minimum_candidate_count=desired_count)
+        with _ocr_request(request_id, image_bytes, desired_count):
+            candidates = self._collect_ranked_candidates(image_bytes, minimum_candidate_count=desired_count)
 
-        if not candidates:
-            raise RuntimeError("A képről nem sikerült kiolvasni olvasható szöveget.")
+            if not candidates:
+                raise RuntimeError("A képről nem sikerült kiolvasni olvasható szöveget.")
 
-        selected_candidates = self._select_unique_candidates(candidates, desired_count)
+            selected_candidates = self._select_unique_candidates(candidates, desired_count)
+            _log_ocr_event("ocr.result_ready", count=len(selected_candidates),
+                           text_length=sum(len(candidate.text) for candidate in selected_candidates))
 
-        return tuple(candidate.text for candidate in selected_candidates)
+            return tuple(candidate.text for candidate in selected_candidates)
 
     def _collect_ranked_candidates(self, image_bytes: bytes, minimum_candidate_count: int = 0) -> list[OCRCandidate]:
         if not image_bytes:
             raise ValueError("Az OCR nem kapott feldolgozható képadatot.")
 
         image = self._load_image(image_bytes)
+        _log_ocr_event("ocr.image_prepared", width=image.width, height=image.height)
         variants = self._build_image_variants(image)
+        _log_ocr_event("ocr.variants_prepared", count=len(variants))
         variants_by_name = {variant_name: variant_bytes for variant_name, variant_bytes in variants}
         fast_variant_names = set(FAST_VARIANT_NAMES)
         fast_candidates: list[OCRCandidate] = []
@@ -236,6 +276,19 @@ class OCRService:
         if self.engine is not None:
             return self.engine
 
+        started = time.monotonic()
+        _log_ocr_event("ocr.engine_initializing", engine="rapidocr", intra_threads=1, inter_threads=1)
+        try:
+            engine = self._initialize_engine()
+        except Exception as error:
+            _log_ocr_exception("ocr.engine_initialization_failed", error, engine="rapidocr",
+                               duration_ms=round((time.monotonic() - started) * 1000))
+            raise
+        _log_ocr_event("ocr.engine_ready", engine="rapidocr", duration_ms=round((time.monotonic() - started) * 1000),
+                       intra_threads=1, inter_threads=1, threads=cv2.getNumThreads())
+        return engine
+
+    def _initialize_engine(self) -> RapidOCR:
         self._ensure_assets()
         det_asset, cls_asset, rec_asset = self._required_assets()
         # Az OCR már alacsony prioritású háttérszálon fut. A natív motorok
@@ -269,36 +322,52 @@ class OCRService:
         return self.engine
 
     def _ensure_assets(self) -> None:
-        for asset in self._required_assets():
+        for asset_index, asset in enumerate(self._required_assets()):
+            started = time.monotonic()
+            _log_ocr_event("ocr.model_check_started", engine="rapidocr", attempt=asset_index + 1)
             if not asset.sha256 or re.fullmatch(r"[0-9a-fA-F]{64}", asset.sha256) is None:
+                _log_ocr_event("ocr.model_check_failed", level="ERROR", reason="invalid_checksum", attempt=asset_index + 1)
                 raise RuntimeError("Az OCR modell ellenőrzőösszege hiányzik vagy hibás.")
 
             if urlparse(asset.url).scheme != "https" or Path(asset.filename).name != asset.filename:
+                _log_ocr_event("ocr.model_check_failed", level="ERROR", reason="invalid_asset_metadata", attempt=asset_index + 1)
                 raise RuntimeError("Az OCR modell letöltési adatai érvénytelenek.")
 
             expected_sha256 = asset.sha256.lower()
             target_path = self.root_dir / asset.filename
 
             if target_path.is_file() and self._file_sha256(target_path) == expected_sha256:
+                _log_ocr_event("ocr.model_check_completed", result="cached", attempt=asset_index + 1,
+                               duration_ms=round((time.monotonic() - started) * 1000))
                 continue
 
+            _log_ocr_event("ocr.model_download_started", attempt=asset_index + 1,
+                           reason="checksum_mismatch" if target_path.is_file() else "missing")
             # A RapidOCR az új letöltést nem ellenőrzi; csak hiteles modell kerülhet betöltésre.
-            with tempfile.TemporaryDirectory(dir=self.root_dir, prefix=".download-") as temporary_dir:
-                download_path = Path(temporary_dir) / asset.filename
-                DownloadFile.run(
-                    DownloadFileInput(
-                        file_url=asset.url,
-                        save_path=download_path,
-                        sha256=expected_sha256,
-                        logger=LOGGER,
-                        verbose=False,
+            try:
+                with tempfile.TemporaryDirectory(dir=self.root_dir, prefix=".download-") as temporary_dir:
+                    download_path = Path(temporary_dir) / asset.filename
+                    DownloadFile.run(
+                        DownloadFileInput(
+                            file_url=asset.url,
+                            save_path=download_path,
+                            sha256=expected_sha256,
+                            logger=LOGGER,
+                            verbose=False,
+                        )
                     )
-                )
 
-                if self._file_sha256(download_path) != expected_sha256:
-                    raise RuntimeError("Az OCR modell ellenőrzőösszege eltér a várt értéktől.")
+                    if self._file_sha256(download_path) != expected_sha256:
+                        _log_ocr_event("ocr.model_check_failed", level="ERROR", reason="download_checksum_mismatch", attempt=asset_index + 1)
+                        raise RuntimeError("Az OCR modell ellenőrzőösszege eltér a várt értéktől.")
 
-                os.replace(download_path, target_path)
+                    os.replace(download_path, target_path)
+            except Exception as error:
+                _log_ocr_exception("ocr.model_download_failed", error, attempt=asset_index + 1,
+                                   duration_ms=round((time.monotonic() - started) * 1000))
+                raise
+            _log_ocr_event("ocr.model_download_completed", attempt=asset_index + 1, result="verified",
+                           duration_ms=round((time.monotonic() - started) * 1000))
 
     def _file_sha256(self, path: Path) -> str:
         checksum = hashlib.sha256()
@@ -482,6 +551,19 @@ class OCRService:
         return buffer.getvalue()
 
     def _extract_with_rapidocr(self, variant_name: str, image_bytes: bytes) -> list[OCRCandidate]:
+        started = time.monotonic()
+        _log_ocr_event("ocr.variant_started", engine="rapidocr", stage=variant_name, image_bytes=len(image_bytes))
+        try:
+            candidates = self._recognize_with_rapidocr(variant_name, image_bytes)
+        except Exception as error:
+            _log_ocr_exception("ocr.variant_failed", error, engine="rapidocr", stage=variant_name,
+                               duration_ms=round((time.monotonic() - started) * 1000))
+            raise
+        _log_ocr_event("ocr.variant_completed", engine="rapidocr", stage=variant_name, count=len(candidates),
+                       duration_ms=round((time.monotonic() - started) * 1000))
+        return candidates
+
+    def _recognize_with_rapidocr(self, variant_name: str, image_bytes: bytes) -> list[OCRCandidate]:
         engine = self._get_engine()
         # A RapidOCR hívásonkénti kapcsolói megmaradnak a motorban. A csak
         # felismerést használó javító kör után mindig visszakapcsoljuk a detektort.
@@ -519,6 +601,7 @@ class OCRService:
         if all(len(group) == 1 for group in groups):
             return boxes, texts, scores
 
+        _log_ocr_event("ocr.overlap_recovery_started", engine="rapidocr", count=sum(len(group) > 1 for group in groups))
         with Image.open(io.BytesIO(image_bytes)) as image:
             merged_boxes, merged_texts, merged_scores = [], [], []
             recovery_count = 0
@@ -560,6 +643,7 @@ class OCRService:
                         merged_texts.append(texts[index])
                         merged_scores.append(scores[index])
 
+        _log_ocr_event("ocr.overlap_recovery_completed", engine="rapidocr", count=recovery_count)
         return merged_boxes, tuple(merged_texts), tuple(merged_scores)
 
     def _overlapping_box_groups(self, boxes) -> list[list[int]]:
@@ -595,6 +679,8 @@ class OCRService:
         if not self.windows_language_tags:
             return []
 
+        started = time.monotonic()
+        _log_ocr_event("ocr.variant_started", engine="windows_ocr", stage=variant_name, image_bytes=len(image_bytes))
         candidates: list[OCRCandidate] = []
 
         for language_tag in self.windows_language_tags:
@@ -606,6 +692,8 @@ class OCRService:
 
             candidates.append(self._build_candidate(text, 1.0, f"Windows OCR ({language_tag})", variant_name))
 
+        _log_ocr_event("ocr.variant_completed", engine="windows_ocr", stage=variant_name, count=len(candidates),
+                       duration_ms=round((time.monotonic() - started) * 1000))
         return candidates
 
     def _run_windows_ocr(self, image_bytes: bytes, language_tag: str) -> str:
@@ -613,7 +701,8 @@ class OCRService:
 
         try:
             return loop.run_until_complete(self._run_windows_ocr_async(image_bytes, language_tag))
-        except Exception:
+        except Exception as error:
+            _log_ocr_exception("ocr.windows_recognition_failed", error, engine="windows_ocr")
             return ""
         finally:
             loop.close()
@@ -636,6 +725,7 @@ class OCRService:
         engine = OcrEngine.try_create_from_language(Language(language_tag))
 
         if engine is None:
+            _log_ocr_event("ocr.windows_engine_unavailable", level="WARNING", engine="windows_ocr")
             return ""
 
         result = await engine.recognize_async(bitmap)
@@ -648,11 +738,13 @@ class OCRService:
 
     def _resolve_windows_language_tags(self) -> tuple[str, ...]:
         if not WINDOWS_OCR_AVAILABLE or OcrEngine is None:
+            _log_ocr_event("ocr.windows_api_unavailable", engine="windows_ocr")
             return ()
 
         try:
             supported = {str(language.language_tag).lower() for language in OcrEngine.available_recognizer_languages}
-        except Exception:
+        except Exception as error:
+            _log_ocr_exception("ocr.windows_languages_failed", error, engine="windows_ocr")
             return ()
 
         language_tags: list[str] = []

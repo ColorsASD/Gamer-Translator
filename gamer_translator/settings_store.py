@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .diagnostics import log_event, log_exception
+
 from .defaults import (
     DEFAULT_BIDIRECTIONAL_PROMPT,
     DEFAULT_SETTINGS,
@@ -193,10 +195,15 @@ class SettingsStore:
 
         try:
             document = json.loads(self.config_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeError, OSError):
+        except FileNotFoundError:
+            log_event("settings.defaults_loaded", reason="missing_file")
+            return {}
+        except (json.JSONDecodeError, UnicodeError, OSError) as error:
+            log_exception("settings.load_failed", error)
             return {}
 
         if not isinstance(document, dict):
+            log_event("settings.load_failed", level="WARNING", reason="invalid_document")
             return {}
 
         self._document_cache = dict(document)
@@ -217,6 +224,9 @@ class SettingsStore:
                 os.fsync(temporary_file.fileno())
 
             os.replace(temporary_path, self.config_path)
+        except OSError as error:
+            log_exception("settings.save_failed", error)
+            raise
         finally:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)

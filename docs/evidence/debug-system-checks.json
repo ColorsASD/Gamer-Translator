@@ -1,0 +1,95 @@
+{
+  "checkedAt": "2026-10-01T00:51:19.380915+00:00",
+  "appVersion": "5.12",
+  "executable": "Gamer-Translator-v5.12.exe",
+  "bytes": 381554780,
+  "sha256": "a5c59eb00b5bc0b7207460c6aaa901026420e7acaf4906d0c60bbf9d7363eb62",
+  "pythonTests": {
+    "passed": 243,
+    "failed": 0
+  },
+  "javascriptTests": {
+    "passed": 27,
+    "failed": 0
+  },
+  "packageChecks": {
+    "source:main.py": true,
+    "source:gamer_translator/defaults.py": true,
+    "source:gamer_translator/diagnostics.py": true,
+    "source:gamer_translator/hotkeys.py": true,
+    "source:gamer_translator/main_window.py": true,
+    "source:gamer_translator/ocr_service.py": true,
+    "source:gamer_translator/self_test.py": true,
+    "source:gamer_translator/settings_store.py": true,
+    "asset:gamer_translator/automation.js": true,
+    "asset:gamer_translator/assets/icon-128.png": true,
+    "runtime:QtWebEngineProcess.exe": true,
+    "runtime:Qt6WebEngineCore.dll": true,
+    "runtime:qtwebengine_resources.pak": true,
+    "runtime:icudtl.dat": true,
+    "runtime:qwindows.dll": true,
+    "runtime:onnxruntime_pybind11_state.pyd": true,
+    "runtime:Windows OCR": true,
+    "runtime:WinRT runtime": true,
+    "runtime:RapidOCR data": true,
+    "runtime:wordfreq Hungarian": true,
+    "runtime:wordfreq English": true,
+    "runtime:verified python3.dll": true,
+    "runtime:verified python313.dll": true,
+    "runtime:verified _ssl.pyd": true,
+    "runtime:verified libssl-3.dll": true,
+    "runtime:verified libcrypto-3.dll": true,
+    "runtime:verified PySide6/QtCore.pyd": true,
+    "runtime:verified PySide6/Qt6Core.dll": true,
+    "runtime:verified PySide6/pyside6.abi3.dll": true,
+    "runtime:verified shiboken6/Shiboken.pyd": true,
+    "runtime:verified shiboken6/shiboken6.abi3.dll": true,
+    "runtime:Windows ICU not bundled": true,
+    "runtime:Qt ICU exports available from Windows": true,
+    "PE:Windows x64 GUI": true
+  },
+  "frozenSelfTest": {
+    "startedAt": "2026-10-01T00:49:57.739002+00:00",
+    "frozen": true,
+    "python": "3.13.15",
+    "openssl": "OpenSSL 3.0.21 9 Jun 2026",
+    "qt": "6.11.2",
+    "mode": "offline fixture; no live ChatGPT requests",
+    "checks": {
+      "window_and_webengine_start": true,
+      "isolated_profile_and_clipboard": true,
+      "repeated_quick_chat_response_storage_overlay_hide_show": true,
+      "clipboard_requires_screen_clip_hotkey": true,
+      "png_attachment_native_pipeline": true,
+      "no_network_requests_or_native_hotkeys": true,
+      "native_rapidocr_and_windows_inference": true,
+      "clean_window_shutdown": true
+    },
+    "cycles": 7,
+    "ocr": {
+      "expected": "Hello gamer",
+      "rapidocr": "Hello gamer",
+      "windows": "Hello gamer"
+    },
+    "elapsedSeconds": 10.536,
+    "passed": true
+  },
+  "pipAudit": {
+    "auditedPackages": 45,
+    "knownVulnerabilities": 0,
+    "skippedPackages": 0,
+    "urllib3": "2.8.0"
+  },
+  "bundledUrllib3VersionVerified": "2.8.0",
+  "defender": {
+    "completed": true,
+    "threatsFound": false,
+    "remediationDisabled": true
+  },
+  "authenticodeStatus": "NotSigned",
+  "limitations": [
+    "Az ellenőrzés offline tesztprofilt és helyi DOM-mintát használt.",
+    "Játékbeli FPS, fizikai bemeneti késleltetés és többórás háttérfutás nem lett mérve.",
+    "A függőségaudit a Python-csomagokra vonatkozik, nem minden natív futtatókönyvtárra."
+  ]
+}

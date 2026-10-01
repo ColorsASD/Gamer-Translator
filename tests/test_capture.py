@@ -176,6 +176,33 @@ class CapturePermissionTests(unittest.TestCase):
         self.window._poll_clipboard()
         self.window._process_clipboard_translation.assert_called_once_with(own_payload)
 
+    def test_multiple_authorized_images_are_processed_in_order(self):
+        payloads = []
+        for index in range(3):
+            self.window._arm_screen_clip_hotkey()
+            payloads.append(self.receive_image(str(index)))
+        for _ in range(3):
+            self.window._poll_clipboard()
+        self.assertEqual([call.args[0] for call in self.window._process_clipboard_translation.call_args_list], payloads)
+
+    def test_full_queue_keeps_accepted_images_and_reports_rejection(self):
+        payloads = []
+        for index in range(module.MAX_PENDING_CLIPBOARD_IMAGES + 1):
+            self.window._arm_screen_clip_hotkey()
+            payloads.append(self.receive_image(str(index)))
+        self.window._save_last_run_status.assert_called_once()
+        for _ in range(module.MAX_PENDING_CLIPBOARD_IMAGES):
+            self.window._poll_clipboard()
+        self.assertEqual([call.args[0] for call in self.window._process_clipboard_translation.call_args_list], payloads[:-1])
+
+    def test_new_capture_immediately_invalidates_previous_translation(self):
+        self.window.last_translated_text = "Régi fordítás"
+        self.window.store = Mock()
+        self.window._arm_screen_clip_hotkey()
+        self.receive_image()
+        self.assertEqual(self.window.last_translated_text, "")
+        self.window.store.save_last_translated_text.assert_called_once_with("")
+
     def test_disabled_capture_settings_reject_image(self):
         for setting in ("monitoring_enabled", "screen_clip_hotkey_enabled"):
             with self.subTest(setting=setting):
