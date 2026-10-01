@@ -69,7 +69,7 @@ SUSPENDED_FRAME_INTERVAL_MS = 1200
 BACKGROUND_TASK_EVENT_INTERVAL_MS = 40
 SCREEN_CLIP_ARM_TIMEOUT_SECONDS = 45.0
 AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS = 70000
-AUTOMATION_SCRIPT_VERSION = "2026-10-01-1"
+AUTOMATION_SCRIPT_VERSION = "2026-10-01-2"
 INTERACTION_HEARTBEAT_INTERVAL_MS = 250
 INTERACTION_STALE_RESET_SECONDS = 8.0
 RESPONSE_FOLLOWUP_IDLE_TIMEOUT_SECONDS = 20.0
@@ -194,6 +194,8 @@ if sys.platform == "win32":
     user32.SendInput.restype = wintypes.UINT
     user32.GetKeyboardLayout.argtypes = (wintypes.DWORD,)
     user32.GetKeyboardLayout.restype = wintypes.HANDLE
+    user32.GetKeyState.argtypes = (ctypes.c_int,)
+    user32.GetKeyState.restype = ctypes.c_short
     user32.VkKeyScanExW.argtypes = (wintypes.WCHAR, wintypes.HANDLE)
     user32.VkKeyScanExW.restype = ctypes.c_short
     user32.SetWindowsHookExW.argtypes = (ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD)
@@ -230,6 +232,8 @@ if sys.platform == "win32":
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     kernel32.GetLastError.argtypes = ()
     kernel32.GetLastError.restype = wintypes.DWORD
+    kernel32.SetLastError.argtypes = (wintypes.DWORD,)
+    kernel32.SetLastError.restype = None
     kernel32.GetThreadPriority.argtypes = (wintypes.HANDLE,)
     kernel32.GetThreadPriority.restype = ctypes.c_int
     kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
@@ -312,8 +316,9 @@ def is_extended_virtual_key(virtual_key: int) -> bool:
     }
 
 
-def build_scan_code_input(virtual_key: int, *, key_up: bool = False) -> INPUT:
-    scan_code = user32.MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC)
+def build_scan_code_input(virtual_key: int, *, key_up: bool = False, keyboard_layout: int | None = None) -> INPUT:
+    scan_code = (user32.MapVirtualKeyExW(virtual_key, MAPVK_VK_TO_VSC, keyboard_layout)
+                 if keyboard_layout else user32.MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC))
     flags = KEYEVENTF_SCANCODE
 
     if key_up:
@@ -322,7 +327,7 @@ def build_scan_code_input(virtual_key: int, *, key_up: bool = False) -> INPUT:
     if is_extended_virtual_key(virtual_key):
         flags |= KEYEVENTF_EXTENDEDKEY
 
-    if scan_code == 0:
+    if type(scan_code) is not int or scan_code == 0:
         return build_key_input(virtual_key, key_up=key_up)
 
     return INPUT(
@@ -346,7 +351,7 @@ def build_modified_key_inputs(modifier_virtual_key: int, key_virtual_key: int) -
     ]
 
 
-def build_character_inputs(character: str) -> list[INPUT]:
+def build_character_inputs(character: str, *, keyboard_layout: int | None = None, caps_lock: bool | None = None) -> list[INPUT]:
     if sys.platform != "win32":
         return []
 
@@ -362,7 +367,16 @@ def build_character_inputs(character: str) -> list[INPUT]:
     if ord(character) > 0xFFFF:
         return build_unicode_inputs(character)
 
-    keyboard_layout = user32.GetKeyboardLayout(0)
+    if caps_lock is None:
+        caps_lock = _typing_caps_lock_enabled()
+    if caps_lock and character.isalpha():
+        # A CapsLock nem fordíthatja meg a kész fordítás betűinek méretét.
+        # Unicode-bevitelhez nem nyomunk Shiftet és nem kapcsoljuk a CapsLockot.
+        return build_unicode_inputs(character)
+
+    if keyboard_layout == 0:
+        return build_unicode_inputs(character)
+    keyboard_layout = keyboard_layout if keyboard_layout is not None else user32.GetKeyboardLayout(0)
     mapping = user32.VkKeyScanExW(character, keyboard_layout)
 
     if mapping == -1:
@@ -384,15 +398,82 @@ def build_character_inputs(character: str) -> list[INPUT]:
     inputs: list[INPUT] = []
 
     for modifier_key in modifier_keys:
-        inputs.append(build_scan_code_input(modifier_key))
+        inputs.append(build_scan_code_input(modifier_key, keyboard_layout=keyboard_layout))
 
-    inputs.append(build_scan_code_input(virtual_key))
-    inputs.append(build_scan_code_input(virtual_key, key_up=True))
+    inputs.append(build_scan_code_input(virtual_key, keyboard_layout=keyboard_layout))
+    inputs.append(build_scan_code_input(virtual_key, key_up=True, keyboard_layout=keyboard_layout))
 
     for modifier_key in reversed(modifier_keys):
-        inputs.append(build_scan_code_input(modifier_key, key_up=True))
+        inputs.append(build_scan_code_input(modifier_key, key_up=True, keyboard_layout=keyboard_layout))
 
     return inputs
+
+
+def _typing_keyboard_layout(target_window: int) -> int:
+    try:
+        thread_id = user32.GetWindowThreadProcessId(target_window, None)
+        if type(thread_id) is int and thread_id > 0:
+            layout = user32.GetKeyboardLayout(thread_id)
+            return layout if type(layout) is int and layout else 0
+    except Exception:
+        pass
+    return 0
+
+
+def _typing_modifiers_pressed() -> bool:
+    for virtual_key in (VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN):
+        state = user32.GetAsyncKeyState(virtual_key)
+        if type(state) is int and state & 0x8000:
+            return True
+    return False
+
+
+def _typing_caps_lock_enabled() -> bool:
+    state = user32.GetKeyState(0x14)
+    return type(state) is int and bool(state & 1)
+
+
+def _typing_event_flags(target_window: int) -> QEventLoop.ProcessEventsFlag:
+    try:
+        process_id = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(target_window, ctypes.byref(process_id))
+        if process_id.value == os.getpid():
+            # A saját Qt célmező keypress üzeneteit karakterenként is fel kell
+            # dolgozni, amíg a hozzájuk tartozó Shift/AltGr állapot érvényes.
+            return QEventLoop.ProcessEventsFlag.AllEvents
+    except Exception:
+        pass
+    return QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
+
+
+def _typing_snapshot_error(window: Any, text: str, request_id: str, generation: int | None = None) -> str | None:
+    if getattr(window, "operations_cancelled", False) or getattr(window, "exit_requested", False):
+        return "shutdown"
+    if generation is not None and generation != getattr(window, "hotkey_generation", None):
+        return "hotkey_changed"
+    if request_id != getattr(window, "latest_translation_request_id", ""):
+        return "new_request"
+    if (window.last_translated_text != text
+            or request_id and request_id != getattr(window, "translation_result_request_id", "")
+            or not getattr(window, "translation_result_complete", True)):
+        return "translation_changed"
+    return None
+
+
+def _partial_input_releases(inputs: list[INPUT], inserted_count: int) -> list[INPUT]:
+    pressed: dict[tuple[int, int, int], INPUT] = {}
+    for entry in inputs[:inserted_count]:
+        identity = (int(entry.ki.wVk), int(entry.ki.wScan), int(entry.ki.dwFlags) & ~KEYEVENTF_KEYUP)
+        if entry.ki.dwFlags & KEYEVENTF_KEYUP:
+            pressed.pop(identity, None)
+        else:
+            pressed[identity] = entry
+    releases = []
+    for entry in reversed(list(pressed.values())):
+        release = INPUT.from_buffer_copy(entry)
+        release.ki.dwFlags |= KEYEVENTF_KEYUP
+        releases.append(release)
+    return releases
 
 
 class BrowserPage(QWebEnginePage):
@@ -949,7 +1030,12 @@ class QuickChatOverlay(QWidget):
         self.submitted.emit(text)
 
 
+class BrowserOperationCancelled(RuntimeError):
+    """A kilépés miatt megszakított böngészőművelet nem oldalhiba."""
+
+
 class MainWindow(QMainWindow):
+    browser_operations_cancelled = Signal()
     def __init__(self, *, store: SettingsStore | None = None, clipboard: Any = None,
                  private_browser: bool = False, open_on_start: bool = True) -> None:
         super().__init__()
@@ -974,6 +1060,7 @@ class MainWindow(QMainWindow):
         self.last_translated_text = self.store.load_last_translated_text()
         self.latest_translation_request_id = ""
         self.translation_result_request_id = ""
+        self.translation_result_complete = bool(self.last_translated_text)
         self.active_translation_request_id = ""
         self.pending_clipboard_payload_queue: list[dict[str, Any]] = []
         self.pending_hotkey_actions: list[tuple[str, int]] = []
@@ -990,6 +1077,7 @@ class MainWindow(QMainWindow):
         self.mouse_hook_callback = None
         self.mouse_recording_buttons: set[tuple[int, bool]] = set()
         self.hotkey_system_integration_enabled = False
+        self.operations_cancelled = False
         self.native_window_theme_applied = False
         self.exit_requested = False
         self.window_was_maximized_before_hide = False
@@ -1089,6 +1177,8 @@ class MainWindow(QMainWindow):
             return
 
         self.hotkey_system_integration_enabled = False
+        self.operations_cancelled = True
+        self.browser_operations_cancelled.emit()
         if hasattr(self, "diagnostics_timer"):
             self.diagnostics_timer.stop()
         self.store.save_settings(self._read_settings_from_form())
@@ -2098,6 +2188,8 @@ class MainWindow(QMainWindow):
         )
 
     def _handle_load_started(self) -> None:
+        if self.operations_cancelled:
+            return
         self.browser_load_started_at = time.monotonic()
         log_event("browser.load_started", request_id=getattr(self, "active_translation_request_id", None))
         self.page_loading = True
@@ -2110,6 +2202,8 @@ class MainWindow(QMainWindow):
         log_event("browser.load_finished", success=ok,
                   duration_ms=round((time.monotonic() - getattr(self, "browser_load_started_at", time.monotonic())) * 1000))
         self.page_loading = False
+        if self.operations_cancelled:
+            return
         self._update_browser_origin_label(self.browser.url())
 
         if not ok:
@@ -2120,6 +2214,8 @@ class MainWindow(QMainWindow):
         try:
             self._ensure_automation_ready()
             self._set_live_status("A ChatGPT oldal betöltve.")
+        except BrowserOperationCancelled:
+            log_event("browser.automation_cancelled", cancelled=True)
         except RuntimeError as error:
             log_exception("browser.automation_failed", error)
             self._set_live_status(str(error))
@@ -2195,6 +2291,8 @@ class MainWindow(QMainWindow):
         try:
             self._ensure_chatgpt_page_loaded(reload_if_open=True)
             self._ensure_automation_ready()
+        except BrowserOperationCancelled:
+            log_event("browser.open_cancelled", cancelled=True)
         except Exception as error:  # noqa: BLE001
             message = str(error)
             log_exception("browser.open_failed", error)
@@ -2232,6 +2330,8 @@ class MainWindow(QMainWindow):
             )
             self._save_last_run_status("A kézi prompt elküldve a ChatGPT-nek.")
             self._set_live_status("A prompt elküldve.")
+        except BrowserOperationCancelled:
+            log_event("prompt.cancelled", cancelled=True)
         except Exception as error:  # noqa: BLE001
             log_exception("prompt.failed", error)
             self._save_last_run_status(str(error))
@@ -2241,16 +2341,22 @@ class MainWindow(QMainWindow):
             self._end_browser_interaction()
 
     def _ensure_chatgpt_page_loaded(self, *, reload_if_open: bool) -> None:
+        if getattr(self, "operations_cancelled", False):
+            raise BrowserOperationCancelled()
         current_url = self.browser.url().toString().strip()
         target_url = CHATGPT_URL
 
         if not self._is_chatgpt_url(current_url):
+            # A loadStarted csak a következő Qt eseménykörben érkezhet meg.
+            # A várakozásnak már a navigáció elindításakor aktívnak kell lennie.
+            self.page_loading = True
             self.browser.load(QUrl(target_url))
             self._wait_for_page_load(self.settings.page_ready_timeout_ms + 5000)
         elif self.page_loading:
             self._wait_for_page_load(self.settings.page_ready_timeout_ms + 5000)
         elif reload_if_open:
             self._set_live_status("A ChatGPT oldal újratöltése folyamatban.")
+            self.page_loading = True
             self.browser.reload()
             self._wait_for_page_load(self.settings.page_ready_timeout_ms + 5000)
 
@@ -2354,9 +2460,9 @@ class MainWindow(QMainWindow):
                 "notified": False,
             }
 
-            if delivery_payload.get("copyResponseToClipboard"):
+            if delivery_payload.get("waitForResponse"):
                 progress_handler, progress_state = self._build_response_progress_handler(
-                    copy_to_clipboard=True,
+                    copy_to_clipboard=bool(delivery_payload.get("copyResponseToClipboard")),
                     show_overlay=True,
                     play_sound=True,
                     request_id=request_id,
@@ -2369,6 +2475,8 @@ class MainWindow(QMainWindow):
                 self._start_response_followup_polling(follow_up_progress_call_id, progress_handler)
 
             translated_text = str(result.get("assistantResponseText") or "").strip()
+            if result.get("assistantResponseComplete") is False:
+                translated_text = ""
 
             if self.settings.copy_response_to_clipboard:
                 if not translated_text:
@@ -2399,6 +2507,8 @@ class MainWindow(QMainWindow):
                 self._hide_translation_overlay()
 
             self._save_last_run_status(success_status_message)
+        except BrowserOperationCancelled:
+            log_event("translation.cancelled", request_id=request_id, kind="image", cancelled=True)
         except Exception as error:  # noqa: BLE001
             log_exception("translation.failed", error, request_id=request_id, kind="image")
             self._hide_translation_overlay()
@@ -2439,6 +2549,7 @@ class MainWindow(QMainWindow):
                     "imageFilename": "",
                     "autoSubmit": True,
                     "copyResponseToClipboard": self.settings.copy_response_to_clipboard,
+                    "waitForResponse": True,
                     "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
                     "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
                 },
@@ -2454,6 +2565,7 @@ class MainWindow(QMainWindow):
                 "imageFilename": str(payload["imageFilename"]),
                 "autoSubmit": True,
                 "copyResponseToClipboard": self.settings.copy_response_to_clipboard,
+                "waitForResponse": True,
                 "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
                 "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
             },
@@ -2487,6 +2599,10 @@ class MainWindow(QMainWindow):
 
         def handle_progress(progress: dict[str, Any]) -> None:
             if str(progress.get("kind") or "") != "assistant_response":
+                return
+            if progress.get("complete") is not True:
+                log_event("response.partial_ignored", request_id=request_id,
+                          text_length=len(str(progress.get("text") or "")))
                 return
 
             translated_text = str(progress.get("text") or "").strip()
@@ -2593,21 +2709,17 @@ class MainWindow(QMainWindow):
             self._stop_response_followup_polling()
             return
 
-        if (
+        deadline_reached = (
             self.response_followup_started_monotonic > 0.0
             and now - self.response_followup_started_monotonic >= RESPONSE_FOLLOWUP_MAX_TIMEOUT_SECONDS
-        ):
-            self._stop_response_followup_polling()
-            return
+        )
 
-        if (
+        idle_reached = (
             not getattr(self, "response_followup_waiting_for_first_response", False)
             and
             self.response_followup_last_activity_monotonic > 0.0
             and now - self.response_followup_last_activity_monotonic >= RESPONSE_FOLLOWUP_IDLE_TIMEOUT_SECONDS
-        ):
-            self._stop_response_followup_polling()
-            return
+        )
 
         try:
             diagnostic_call_id = getattr(self, "response_followup_diagnostic_call_id", "")
@@ -2623,16 +2735,28 @@ class MainWindow(QMainWindow):
                 """,
                 timeout_ms=3000,
             )
+        except BrowserOperationCancelled:
+            log_event("response.followup_cancelled", request_id=request_id, cancelled=True)
+            self._stop_response_followup_polling(stop_remote=False)
+            return
         except Exception as error:
             log_exception("response.followup_poll_failed", error, request_id=request_id)
             self.response_followup_error_count += 1
 
-            if self.response_followup_error_count >= RESPONSE_FOLLOWUP_MAX_ERROR_COUNT:
+            if deadline_reached or idle_reached or self.response_followup_error_count >= RESPONSE_FOLLOWUP_MAX_ERROR_COUNT:
                 self._stop_response_followup_polling()
 
             return
 
         if not isinstance(progress_json, str) or not progress_json:
+            if deadline_reached or idle_reached:
+                self._stop_response_followup_polling()
+            return
+
+        if progress_call_id != self.response_followup_progress_call_id:
+            return
+        if request_id and request_id != getattr(self, "latest_translation_request_id", ""):
+            self._stop_response_followup_polling()
             return
 
         try:
@@ -2642,18 +2766,24 @@ class MainWindow(QMainWindow):
                 nested_progress = progress.get("progress")
                 progress = json.loads(nested_progress) if isinstance(nested_progress, str) and nested_progress else {}
             if not isinstance(progress, dict):
+                if deadline_reached or idle_reached:
+                    self._stop_response_followup_polling()
                 return
             progress_sequence = int(progress.get("seq") or 0)
         except (ValueError, TypeError, OverflowError):
+            if deadline_reached or idle_reached:
+                self._stop_response_followup_polling()
             return
 
         if progress_sequence <= self.response_followup_last_sequence:
+            if deadline_reached or idle_reached:
+                self._stop_response_followup_polling()
             return
 
         self.response_followup_last_sequence = progress_sequence
         self.response_followup_last_activity_monotonic = time.monotonic()
         self.response_followup_error_count = 0
-        if str(progress.get("kind") or "") == "assistant_response":
+        if str(progress.get("kind") or "") == "assistant_response" and progress.get("complete") is True:
             self.response_followup_waiting_for_first_response = False
 
         progress_handler = self.response_followup_handler
@@ -2663,8 +2793,8 @@ class MainWindow(QMainWindow):
             except Exception as error:
                 log_exception("response.followup_handler_failed", error, request_id=request_id)
 
-        if bool(progress.get("done")):
-            self._stop_response_followup_polling(stop_remote=False)
+        if bool(progress.get("done")) or deadline_reached or idle_reached:
+            self._stop_response_followup_polling(stop_remote=not bool(progress.get("done")))
 
     def _process_quick_chat_translation(self, prompt_text: str) -> None:
         cleaned_prompt = str(prompt_text or "").strip()
@@ -2714,6 +2844,7 @@ class MainWindow(QMainWindow):
                     "imageFilename": "",
                     "autoSubmit": True,
                     "copyResponseToClipboard": True,
+                    "waitForResponse": True,
                     "pageReadyTimeoutMs": self.settings.page_ready_timeout_ms,
                     "responseTimeoutMs": DEFAULT_RESPONSE_TIMEOUT_MS,
                 },
@@ -2725,6 +2856,8 @@ class MainWindow(QMainWindow):
                 self._start_response_followup_polling(follow_up_progress_call_id, progress_handler)
 
             translated_text = str(result.get("assistantResponseText") or "").strip()
+            if result.get("assistantResponseComplete") is False:
+                translated_text = ""
 
             if not translated_text:
                 message = "A gyors chat üzenet elküldve, de a ChatGPT válasza nem lett kiolvasható."
@@ -2743,6 +2876,8 @@ class MainWindow(QMainWindow):
             self._save_last_run_status(
                 f"A gyors chat fordítása a vágólapra másolva és memóriába mentve. Gyorsbillentyű: {format_hotkey_definition(self.settings.type_out_hotkey)}"
             )
+        except BrowserOperationCancelled:
+            log_event("translation.cancelled", request_id=request_id, kind="quick_chat", cancelled=True)
         except Exception as error:  # noqa: BLE001
             log_exception("translation.failed", error, request_id=request_id, kind="quick_chat")
             self._hide_translation_overlay()
@@ -2757,6 +2892,7 @@ class MainWindow(QMainWindow):
     def _invalidate_translation_result(self, request_id: str, kind: str) -> None:
         self.latest_translation_request_id = request_id
         self.translation_result_request_id = ""
+        self.translation_result_complete = False
         self.last_translated_text = ""
         store = getattr(self, "store", None)
         if store is not None:
@@ -2771,12 +2907,17 @@ class MainWindow(QMainWindow):
         show_overlay: bool,
         play_sound: bool,
         request_id: str | None = None,
+        complete: bool = True,
     ) -> None:
+        if not complete:
+            log_event("response.partial_ignored", request_id=request_id, text_length=len(translated_text))
+            return
         if request_id and request_id != getattr(self, "latest_translation_request_id", ""):
             log_event("translation.obsolete_result_ignored", request_id=request_id, text_length=len(translated_text))
             return
         if request_id:
             self.translation_result_request_id = request_id
+        self.translation_result_complete = True
         text_changed = translated_text != self.last_translated_text
         self.last_translated_text = translated_text
         log_event("translation.result_saved", request_id=request_id, text_length=len(translated_text),
@@ -3318,9 +3459,20 @@ class MainWindow(QMainWindow):
 
             self.suppressed_hotkey_presses[(vk_code, injected)] = action
             self.hotkey_pressed_states[action] = True
+            typing_context = None
+            if action == "type_out":
+                target_window = user32.GetForegroundWindow()
+                if type(target_window) is int:
+                    # A GUI callback késése nem választhat új célablakot vagy új szöveget.
+                    typing_context = {"target_window": target_window, "text": self.last_translated_text,
+                                      "request_id": getattr(self, "latest_translation_request_id", "")}
             self._mask_hotkey_modifier_menu(hotkey_modifiers)
             generation = self.hotkey_generation
-            QTimer.singleShot(0, lambda action_name=action: self._trigger_hotkey_action(action_name, generation))
+            if typing_context is not None:
+                QTimer.singleShot(0, lambda action_name=action, context=typing_context: self._trigger_hotkey_action(
+                    action_name, generation, typing_context=context))
+            else:
+                QTimer.singleShot(0, lambda action_name=action: self._trigger_hotkey_action(action_name, generation))
 
             return True
 
@@ -3336,7 +3488,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._update_keyboard_hook_state)
         return True
 
-    def _trigger_hotkey_action(self, action: str, generation: int | None = None) -> None:
+    def _trigger_hotkey_action(self, action: str, generation: int | None = None, *, typing_context: dict[str, Any] | None = None) -> None:
         if (action not in self.registered_hotkeys
                 or generation is not None and generation != self.hotkey_generation
                 or active_hotkey_editor() is not None):
@@ -3359,7 +3511,10 @@ class MainWindow(QMainWindow):
         started_at = time.monotonic()
         try:
             if action == "type_out":
-                self._trigger_type_out_hotkey()
+                if typing_context is None:
+                    self._trigger_type_out_hotkey()
+                else:
+                    self._trigger_type_out_hotkey(typing_context=typing_context)
             elif action == "screen_clip":
                 self._trigger_screen_clip_hotkey()
             elif action == "quick_chat":
@@ -3405,30 +3560,59 @@ class MainWindow(QMainWindow):
 
         return f"{prefix} {' | '.join(self.hotkey_errors.values())}"
 
-    def _trigger_type_out_hotkey(self) -> None:
+    def _trigger_type_out_hotkey(self, *, typing_context: dict[str, Any] | None = None) -> None:
+        if getattr(self, "operations_cancelled", False) or getattr(self, "exit_requested", False):
+            log_event("typing.rejected", reason="shutdown", request_id=typing_context["request_id"]
+                      if typing_context is not None else getattr(self, "latest_translation_request_id", None))
+            return
+        typing_generation = getattr(self, "hotkey_generation", None)
         if self.hotkey_errors.get("type_out"):
             self._set_live_status(self.hotkey_errors["type_out"])
             return
 
-        if not self.last_translated_text:
+        text_snapshot = typing_context["text"] if typing_context is not None else self.last_translated_text
+        latest_request_id = typing_context["request_id"] if typing_context is not None else getattr(self, "latest_translation_request_id", "")
+        if not text_snapshot:
             log_event("typing.rejected", reason="no_current_translation", request_id=getattr(self, "latest_translation_request_id", None))
             self._set_live_status("Nincs kész fordítás a legutóbbi kéréshez. Várd meg a választ, vagy készíts új kivágást.")
             return
 
-        latest_request_id = getattr(self, "latest_translation_request_id", "")
         if latest_request_id and latest_request_id != getattr(self, "translation_result_request_id", ""):
             log_event("typing.rejected", reason="obsolete_translation", request_id=latest_request_id)
             self._set_live_status("A legutóbbi fordítás még nem készült el.")
             return
+        if not getattr(self, "translation_result_complete", True):
+            log_event("typing.rejected", reason="response_pending", request_id=latest_request_id)
+            self._set_live_status("A fordítás még készül. Várd meg a teljes választ, majd nyomd meg újra a gyorsgombot.")
+            return
+        snapshot_error = _typing_snapshot_error(self, text_snapshot, latest_request_id)
+        if snapshot_error:
+            log_event("typing.rejected", reason=snapshot_error, request_id=latest_request_id)
+            self._set_live_status("A fordítás megváltozott a gyorsgomb lenyomása óta. Nyomd meg újra a gyorsgombot.")
+            return
 
         # A várakozás alatt is válthat ablakot a felhasználó; a cél már a
         # gyorsbillentyű aktiválásakor rögzített, nem a felengedés után.
-        target_window = user32.GetForegroundWindow() if sys.platform == "win32" else None
+        target_window = (typing_context["target_window"] if typing_context is not None
+                         else user32.GetForegroundWindow() if sys.platform == "win32" else None)
         if not target_window:
+            log_event("typing.rejected", reason="no_foreground", request_id=latest_request_id)
             self._set_live_status("A begépeléshez nem azonosítható aktív ablak.")
             return
-        if self._wait_for_modifier_release() and self._type_cached_text_via_hotkey(target_window=target_window):
-            log_event("typing.completed", request_id=latest_request_id, text_length=len(self.last_translated_text))
+        modifiers_released = self._wait_for_modifier_release()
+        if getattr(self, "operations_cancelled", False) or getattr(self, "exit_requested", False):
+            log_event("typing.cancelled", reason="shutdown", request_id=latest_request_id)
+            return
+        if typing_generation is not None and typing_generation != getattr(self, "hotkey_generation", None):
+            log_event("typing.rejected", reason="hotkey_changed", request_id=latest_request_id)
+            self._set_live_status("A begépelés nem indult el, mert megváltozott a gyorsbillentyű beállítása. Nyomd meg újra a gyorsgombot.")
+            return
+        if not modifiers_released:
+            log_event("typing.rejected", reason="modifier_timeout", request_id=latest_request_id, timeout_ms=1200)
+            self._set_live_status("A begépelés nem indult el, mert a módosító billentyű lenyomva maradt. Engedd fel az Alt/Ctrl/Shift/Win gombokat, majd próbáld újra.")
+            return
+        if self._type_cached_text_via_hotkey(target_window=target_window, text_snapshot=text_snapshot, request_id=latest_request_id):
+            log_event("typing.completed", request_id=latest_request_id, text_length=len(text_snapshot))
             self._set_live_status(f"A mentett fordítás begépelve: {format_hotkey_definition(self.settings.type_out_hotkey)}")
 
     def _trigger_screen_clip_hotkey(self) -> None:
@@ -3480,11 +3664,12 @@ class MainWindow(QMainWindow):
         if sys.platform != "win32":
             return False
 
-        modifier_keys = (VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN)
         deadline = time.monotonic() + 1.2
 
         while time.monotonic() < deadline:
-            if not any(user32.GetAsyncKeyState(key_code) & 0x8000 for key_code in modifier_keys):
+            if getattr(self, "operations_cancelled", False) or getattr(self, "exit_requested", False):
+                return False
+            if not _typing_modifiers_pressed():
                 return True
 
             QGuiApplication.processEvents()
@@ -3492,44 +3677,102 @@ class MainWindow(QMainWindow):
 
         return False
 
-    def _type_cached_text_via_hotkey(self, *, target_window: int | None = None) -> bool:
-        if sys.platform != "win32" or not self.last_translated_text:
+    def _type_cached_text_via_hotkey(self, *, target_window: int | None = None, text_snapshot: str | None = None, request_id: str | None = None) -> bool:
+        text_snapshot = self.last_translated_text if text_snapshot is None else text_snapshot
+        if sys.platform != "win32" or not text_snapshot:
             return False
 
         if target_window is None:
             target_window = user32.GetForegroundWindow()
 
-        typing_request_id = getattr(self, "latest_translation_request_id", "")
-        log_event("typing.started", request_id=typing_request_id, text_length=len(self.last_translated_text))
-        for character in self.last_translated_text:
+        typing_request_id = getattr(self, "latest_translation_request_id", "") if request_id is None else request_id
+        typing_generation = getattr(self, "hotkey_generation", None)
+        event_flags = _typing_event_flags(target_window)
+        log_event("typing.started", request_id=typing_request_id, text_length=len(text_snapshot),
+                  mode="same_process" if event_flags == QEventLoop.ProcessEventsFlag.AllEvents else "external_process")
+        last_caps_lock_state = None
+        typed_count = 0
+        for character in text_snapshot:
             # A hosszú begépelés alatt is ki kell szolgálni a natív hookot,
             # különben a Windows időtúllépés miatt eltávolíthatja.
-            QGuiApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
-            if typing_request_id != getattr(self, "latest_translation_request_id", ""):
-                log_event("typing.cancelled", request_id=typing_request_id, reason="new_request")
-                self._set_live_status("A begépelés megszakadt, mert új fordítási kérés érkezett.")
+            QGuiApplication.processEvents(event_flags)
+            snapshot_error = _typing_snapshot_error(self, text_snapshot, typing_request_id, typing_generation)
+            if snapshot_error:
+                log_event("typing.cancelled", request_id=typing_request_id, reason=snapshot_error, count=typed_count)
+                if snapshot_error != "shutdown":
+                    self._set_live_status("A begépelés megszakadt, mert megváltozott a gyorsbillentyű beállítása. Nyomd meg újra a gyorsgombot."
+                                          if snapshot_error == "hotkey_changed" else
+                                          "A begépelés megszakadt, mert a fordítás megváltozott. Nyomd meg újra a gyorsgombot a friss szöveghez.")
                 return False
             if not target_window or user32.GetForegroundWindow() != target_window:
                 log_event("typing.cancelled", request_id=typing_request_id, reason="focus_changed")
                 self._set_live_status("A begépelés megszakadt, mert megváltozott az aktív ablak.")
                 return False
-            inputs = build_character_inputs(character)
+            if _typing_modifiers_pressed():
+                log_event("typing.cancelled", request_id=typing_request_id, reason="modifier_pressed", count=typed_count)
+                self._set_live_status("A begépelés megszakadt, mert módosító billentyűt nyomtál le. Engedd fel az Alt/Ctrl/Shift/Win gombokat, majd próbáld újra.")
+                return False
+            caps_lock_state = _typing_caps_lock_enabled()
+            if caps_lock_state != last_caps_lock_state:
+                # A GetKeyState a hívó üzenetsorának állapotát méri; ez nem
+                # bizonyítja a másik folyamat célmezőjének CapsLock állapotát.
+                log_event("typing.keyboard_state", level="DEBUG", request_id=typing_request_id,
+                          kind="caps_lock", source="caller_queue", enabled=caps_lock_state)
+                last_caps_lock_state = caps_lock_state
+            inputs = build_character_inputs(character, keyboard_layout=_typing_keyboard_layout(target_window), caps_lock=caps_lock_state)
 
             if not inputs:
                 continue
 
             input_array = (INPUT * len(inputs))(*inputs)
+            kernel32.SetLastError(0)
             inserted_count = user32.SendInput(len(inputs), input_array, ctypes.sizeof(INPUT))
             if inserted_count != len(inputs):
+                native_error = kernel32.GetLastError()
+                error_code = native_error if type(native_error) is int else 0
+                log_event("typing.input_rejected", level="ERROR", request_id=typing_request_id,
+                          reason="partial_input" if inserted_count else "blocked_input",
+                          count=inserted_count, pending_count=max(0, len(inputs) - inserted_count), code=error_code)
                 # Részleges bevitel után a szintetikus Shift/Alt/billentyű sem maradhat lenyomva.
                 if inserted_count > 0:
-                    releases = [entry for entry in inputs if entry.ki.dwFlags & KEYEVENTF_KEYUP]
-                    if releases:
+                    releases = _partial_input_releases(inputs, inserted_count)
+                    # Csak a sikeres saját prefixben lenyomott billentyűket
+                    # engedjük fel; nincs általános fizikai módosítófelengedés.
+                    for attempt in range(1, 3):
+                        if not releases:
+                            break
                         release_array = (INPUT * len(releases))(*releases)
-                        user32.SendInput(len(releases), release_array, ctypes.sizeof(INPUT))
+                        kernel32.SetLastError(0)
+                        released_count = user32.SendInput(len(releases), release_array, ctypes.sizeof(INPUT))
+                        if released_count == len(releases):
+                            break
+                        release_error = kernel32.GetLastError()
+                        log_event("typing.release_rejected", level="ERROR", request_id=typing_request_id,
+                                  count=released_count, pending_count=max(0, len(releases) - released_count),
+                                  code=release_error if type(release_error) is int else 0, attempt=attempt)
+                        releases = releases[max(0, released_count):]
                 self._set_live_status("A Windows nem engedélyezte a szöveg teljes begépelését.")
                 return False
+            typed_count += 1
             time.sleep(0.012)
+
+        if event_flags == QEventLoop.ProcessEventsFlag.AllEvents:
+            # Az utolsó karakter se maradjon a saját Qt célmező sorában,
+            # miközben a státusz már sikeres begépelést jelez.
+            QGuiApplication.processEvents(event_flags)
+        snapshot_error = _typing_snapshot_error(self, text_snapshot, typing_request_id, typing_generation)
+        if snapshot_error:
+            log_event("typing.cancelled", request_id=typing_request_id, reason=snapshot_error, count=typed_count)
+            if snapshot_error != "shutdown":
+                self._set_live_status("A begépelés megszakadt, mert megváltozott a gyorsbillentyű beállítása. Nyomd meg újra a gyorsgombot."
+                                      if snapshot_error == "hotkey_changed" else
+                                      "A begépelés megszakadt, mert a fordítás megváltozott. Nyomd meg újra a gyorsgombot a friss szöveghez.")
+            return False
+        if event_flags == QEventLoop.ProcessEventsFlag.AllEvents:
+            if user32.GetForegroundWindow() != target_window:
+                log_event("typing.cancelled", request_id=typing_request_id, reason="focus_changed", count=typed_count)
+                self._set_live_status("A begépelés megszakadt, mert megváltozott az aktív ablak.")
+                return False
 
         return True
 
@@ -3832,6 +4075,8 @@ class MainWindow(QMainWindow):
                 pass
 
     def _wait_for_page_load(self, timeout_ms: int) -> None:
+        if getattr(self, "operations_cancelled", False):
+            raise BrowserOperationCancelled()
         if not self.page_loading:
             return
 
@@ -3854,6 +4099,9 @@ class MainWindow(QMainWindow):
 
         timer.timeout.connect(finish)
         self.browser.loadFinished.connect(finish)
+        cancel_signal = getattr(self, "browser_operations_cancelled", None)
+        if cancel_signal is not None:
+            cancel_signal.connect(finish)
         timer.start(timeout_ms)
         heartbeat_timer.timeout.connect(touch_interaction_heartbeat)
         heartbeat_timer.start()
@@ -3866,10 +4114,17 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             pass
 
+        if cancel_signal is not None:
+            cancel_signal.disconnect(finish)
+        if getattr(self, "operations_cancelled", False):
+            raise BrowserOperationCancelled()
+
         if self.page_loading:
             raise RuntimeError("A ChatGPT oldal nem töltődött be időben.")
 
     def _run_javascript(self, script: str, *, timeout_ms: int) -> Any:
+        if getattr(self, "operations_cancelled", False):
+            raise BrowserOperationCancelled()
         if not self._is_chatgpt_url(self.browser.url().toString()):
             raise RuntimeError("Az automatizálás csak a ChatGPT HTTPS oldalán használható.")
 
@@ -3909,6 +4164,9 @@ class MainWindow(QMainWindow):
                 loop.quit()
 
         timer.timeout.connect(handle_timeout)
+        cancel_signal = getattr(self, "browser_operations_cancelled", None)
+        if cancel_signal is not None:
+            cancel_signal.connect(handle_timeout)
         heartbeat_timer.timeout.connect(touch_interaction_heartbeat)
         timer.start(timeout_ms)
         heartbeat_timer.start()
@@ -3919,6 +4177,11 @@ class MainWindow(QMainWindow):
             loop.exec()
         timer.stop()
         heartbeat_timer.stop()
+
+        if cancel_signal is not None:
+            cancel_signal.disconnect(handle_timeout)
+        if getattr(self, "operations_cancelled", False):
+            raise BrowserOperationCancelled()
 
         if not result_box["done"]:
             log_event("browser.javascript_timeout", level="ERROR",

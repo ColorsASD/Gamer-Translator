@@ -16,6 +16,9 @@ const helperNames = [
   'isAssistantResponsePending', 'isExpectedAttachmentReadySnapshot', 'isAttachmentReadySnapshot',
   'attachImage', 'attachViaFileInput', 'attachViaDrop', 'captureComposerAttachmentSnapshot',
   'isImageReadyForSubmit', 'writeDiagnosticEntry',
+  'extractMessageText',
+  'isStableAssistantSnapshot', 'hasActiveGenerationControl',
+  'captureResponseBaselineBeforeSubmit',
 ];
 // Csak a tesztpéldány kap hozzáférést a belső függvényekhez; az éles forrás nem exportál teszt API-t.
 const hook = helperNames.map((name) => `
@@ -62,14 +65,25 @@ class FakeElement extends FakeNode {
     this.dataset = {}; this.disabled = false; this.id = ''; this.isContentEditable = false;
   }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
+  get children() { return this.childNodes.filter((child) => child instanceof FakeElement); }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   hasAttribute(name) { return this.attributes.has(name); }
   querySelectorAll() { return []; }
   querySelector() { return null; }
-  matches() { return false; }
+  matches(selector) {
+    return selector.split(',').some((part) => {
+      part = part.trim();
+      const attrs = [...part.matchAll(/\[([a-z0-9-]+)(?:="([^"]*)")?\]/g)];
+      if (attrs.length && attrs.map((match) => match[0]).join('') === part) {
+        return attrs.every(([, key, value]) => value === undefined ? this.hasAttribute(key) : this.getAttribute(key) === value);
+      }
+      return part.toLowerCase() === this.tagName.toLowerCase();
+    });
+  }
   closest(selector) {
     if (selector === 'button' && this instanceof FakeButton) return this;
     if (selector === 'form' && this instanceof FakeForm) return this;
+    if (this.matches(selector)) return this;
     return this.parentElement?.closest(selector) || null;
   }
   addEventListener(type, handler) {
@@ -574,4 +588,212 @@ test('Késleltetett poll esetén a lezáró progress rekord megőrzi a késői v
   assert.equal(progress.text, 'A végső fordítás megmarad.');
   assert.equal(harness.window.__gamerTranslatorAssistantResponseFollowUps['delayed-poll-followup'], undefined);
   assert.equal(callbacks.size, 0);
+});
+
+
+test('Vágólapmásolás nélkül is kérhető befejezett fordítás a begépelési cache-hez', async () => {
+  let watched = 0;
+  const harness = createHarness({ overrides: {
+    submitTextMessage: async () => {},
+    waitForAssistantResponse: async () => { watched += 1; return { text: 'Kész fordítás' }; },
+  } });
+  const result = await harness.window.__gamerTranslatorDeliver({ prompt: 'Kérés', autoSubmit: true, copyResponseToClipboard: false, waitForResponse: true });
+  assert.equal(result.ok, true); assert.equal(result.assistantResponseText, 'Kész fordítás');
+  assert.equal(result.assistantResponseComplete, true); assert.equal(watched, 1);
+});
+
+test('Streaming timeout nem ad kész fordítást, azonos szöveg befejezése később átvehető', async () => {
+  const baseline = { count: 0, lastText: '', lastNodeId: '', lastPending: false, lastUserKey: '', userKeys: [], userNodeIds: [], assistantNodeIds: [], assistantStableIds: [] };
+  let current = baseline;
+  const partial = { count: 1, lastText: 'Még folyamatban levő szöveg', lastNodeId: 'assistant-1', lastStableId: 'message:answer-1', lastPending: true, lastUserKey: 'message:user-1', lastUserStableId: 'message:user-1', userKeys: ['message:user-1'], userNodeIds: ['user-node-1'], assistantNodeIds: ['assistant-1'], assistantStableIds: ['message:answer-1'], responseUserKey: 'message:user-1', userCount: 1 };
+  const harness = createHarness({ overrides: { captureAssistantSnapshot: () => current, submitTextMessage: async () => { current = partial; } } });
+  const callbacks = new Set();
+  harness.window.__gamerTranslatorDomTracker.subscribe = (callback) => { callbacks.add(callback); return () => callbacks.delete(callback); };
+  const pending = harness.window.__gamerTranslatorDeliver({ prompt: 'Kérés', autoSubmit: true, waitForResponse: true, responseTimeoutMs: 40, progressCallId: 'streaming-test' });
+  await harness.advance(40);
+  const result = await pending;
+  assert.equal(result.ok, false); assert.equal(result.responsePending, true);
+  assert.equal(Boolean(result.assistantResponseText), false);
+  await harness.advance(16000);
+  assert.equal(Boolean(harness.window.__gamerTranslatorAssistantResponseFollowUps['streaming-test-followup']), true);
+  current = { ...partial, lastPending: false };
+  for (const callback of [...callbacks]) callback();
+  const progress = JSON.parse(harness.window.__gamerTranslatorProgress['streaming-test-followup']);
+  assert.equal(progress.text, partial.lastText); assert.equal(progress.complete, true);
+});
+
+test('Vegyes közvetlen és article üzenetek egyesítve és duplikáció nélkül látszanak', () => {
+  const harness = createHarness();
+  const article = harness.document.body.appendChild(new FakeElement('article'));
+  article.setAttribute('aria-label', 'assistant');
+  const direct = article.appendChild(new FakeElement('div'));
+  direct.setAttribute('data-message-author-role', 'assistant'); direct.appendChild(new FakeText('Korábbi válasz'));
+  const newer = harness.document.body.appendChild(new FakeElement('article'));
+  newer.setAttribute('aria-label', 'assistant'); newer.appendChild(new FakeText('Új válasz'));
+  harness.document.querySelectorAll = (selector) => selector === '[data-message-author-role="assistant"]' ? [direct]
+    : selector === '[data-testid^="conversation-turn-"], article, [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]' ? [article, newer] : [];
+  const found = harness.helpers.findAssistantMessageNodes();
+  assert.equal(found.length, 2); assert.equal(found[0], direct); assert.equal(found[1], newer);
+});
+
+test('Article szerzőfejléc helyett a markdown választest kerül kiolvasásra', () => {
+  const harness = createHarness();
+  const article = new FakeElement('article');
+  article.appendChild(new FakeElement('h5')).appendChild(new FakeText('Assistant said:'));
+  const content = article.appendChild(new FakeElement('div'));
+  content.appendChild(new FakeText('A kész fordítás.'));
+  article.querySelector = (selector) => selector === '.markdown' ? content : null;
+  assert.equal(harness.helpers.extractMessageText(article), 'A kész fordítás.');
+  const fallback = new FakeElement('article');
+  const heading = fallback.appendChild(new FakeElement('h5')); heading.setAttribute('class', 'sr-only');
+  heading.appendChild(new FakeText('ChatGPT said:'));
+  fallback.appendChild(new FakeText('A kész fordítás.'));
+  assert.equal(harness.helpers.extractMessageText(fallback), 'A kész fordítás.');
+});
+
+
+function modernDomHarness() {
+  const harness = createHarness();
+  const installQueries = (root) => {
+    const all = [];
+    const walk = (node) => { for (const child of node.childNodes) { if (child instanceof FakeElement) { all.push(child); walk(child); } } };
+    walk(root);
+    for (const element of [root, ...all]) {
+      element.querySelectorAll = (selector) => {
+        const found = [];
+        const descend = (node) => { for (const child of node.childNodes) { if (child instanceof FakeElement) { if (child.matches(selector)) found.push(child); descend(child); } } };
+        descend(element); return found;
+      };
+      element.querySelector = (selector) => element.querySelectorAll(selector)[0] || null;
+    }
+  };
+  const addTurn = (index, text, withAssistant = true) => {
+    const turn = harness.document.body.appendChild(new FakeElement('div')); turn.setAttribute('data-turn-key', `shared-turn-${index}`);
+    const userUnit = turn.appendChild(new FakeElement('div')); userUnit.setAttribute('data-chatgpt-search-unit-key', `user-unit-${index}`);
+    userUnit.setAttribute('data-chatgpt-search-message-ids', `["user-${index}"]`);
+    const bubble = userUnit.appendChild(new FakeElement('div')); bubble.setAttribute('data-user-message-bubble', '');
+    bubble.appendChild(new FakeText('Mesterséges kérés'));
+    let assistantBody = null;
+    if (withAssistant) {
+      const assistantUnit = turn.appendChild(new FakeElement('div')); assistantUnit.setAttribute('data-chatgpt-search-unit-key', `assistant-unit-${index}`);
+      assistantUnit.setAttribute('data-chatgpt-search-message-ids', `["assistant-${index}"]`);
+      assistantUnit.setAttribute('data-content-search-unit-key', `assistant-unit-${index}`);
+      const heading = assistantUnit.appendChild(new FakeElement('h4')); heading.setAttribute('data-conversation-role', 'assistant'); heading.setAttribute('class', 'sr-only');
+      heading.appendChild(new FakeText('ChatGPT said:'));
+      assistantBody = assistantUnit.appendChild(new FakeElement('div')); assistantBody.setAttribute('data-chatgpt-selection-message-id', `assistant-${index}`);
+      const markdown = assistantBody.appendChild(new FakeElement('div')); markdown.setAttribute('data-markdown-text-style', ''); markdown.setAttribute('class', 'MarkdownRoot-fixture');
+      markdown.appendChild(new FakeText(text));
+    }
+    installQueries(harness.document);
+    return { bubble, assistantBody };
+  };
+  return { harness, addTurn };
+}
+
+test('Az új, article nélküli ChatGPT DOM szerepei és üzenetazonosítói felismerhetők', () => {
+  const { harness, addTurn } = modernDomHarness();
+  addTurn(1, 'Azonos fordítás');
+  const previous = harness.helpers.captureAssistantSnapshot();
+  assert.equal(previous.count, 1); assert.equal(previous.userCount, 1);
+  assert.equal(previous.lastText, 'Azonos fordítás'); assert.equal(previous.lastStableId, 'message:assistant-1');
+  assert.equal(previous.lastUserStableId, 'messages:["user-1"]');
+  assert.notEqual(previous.lastStableId, previous.lastUserStableId);
+  addTurn(2, 'Azonos fordítás');
+  const current = harness.helpers.captureAssistantSnapshot();
+  assert.equal(current.count, 2); assert.equal(current.userCount, 2);
+  assert.equal(current.lastText.includes('ChatGPT said:'), false);
+  assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), true);
+});
+
+test('Az új ChatGPT user bubble szöveg nélküli képkérésként is külön üzenet', () => {
+  const { harness, addTurn } = modernDomHarness();
+  const { bubble } = addTurn(1, '', false);
+  bubble.replaceChildren(new FakeImage('img'));
+  const snapshot = harness.helpers.captureAssistantSnapshot();
+  assert.equal(snapshot.userCount, 1); assert.equal(snapshot.lastUserStableId, 'messages:["user-1"]');
+});
+
+
+test('Composer Stop vezérlő mellett a pending attribútum nélküli új DOM sem kész válasz', () => {
+  const harness = createHarness();
+  const stop = new FakeButton(); stop.setAttribute('aria-label', 'Stop generating');
+  harness.document.body.querySelectorAll = (selector) => selector === 'button' ? [stop] : [];
+  assert.equal(harness.helpers.hasActiveGenerationControl(), true);
+  assert.equal(harness.helpers.isStableAssistantSnapshot({ lastText: 'Részleges', lastPending: false, generationPending: true }), false);
+  stop.setAttribute('aria-label', 'Send message');
+  assert.equal(harness.helpers.hasActiveGenerationControl(), false);
+  assert.equal(harness.helpers.isStableAssistantSnapshot({ lastText: 'Végleges', lastPending: false, generationPending: false }), true);
+});
+
+test('Több markdown válaszrész hiánytalanul, duplikáció nélkül kerül a cache szövegébe', () => {
+  const harness = createHarness();
+  const body = new FakeElement('div');
+  const first = body.appendChild(new FakeElement('div')); first.appendChild(new FakeText('Első bekezdés.'));
+  const second = body.appendChild(new FakeElement('div')); second.appendChild(new FakeText('Második bekezdés.'));
+  body.querySelectorAll = () => [first, second]; body.querySelector = () => first;
+  assert.equal(harness.helpers.extractMessageText(body), 'Első bekezdés.\n\nMásodik bekezdés.');
+});
+
+test('Rejtett régi üzenetmásolat és válaszrész nem előzheti meg a látható teljes fordítást', () => {
+  for (const hiddenKind of ['hidden', 'aria-hidden', 'parent-display']) {
+    const { harness, addTurn } = modernDomHarness();
+    const { assistantBody } = addTurn(1, 'A látható teljes fordítás.');
+    harness.window.getComputedStyle = (element) => ({ display: element.style.display || 'block', visibility: element.style.visibility || 'visible' });
+    const parent = harness.document.body.appendChild(new FakeElement('div'));
+    const duplicate = parent.appendChild(new FakeElement('article'));
+    duplicate.setAttribute('data-message-author-role', 'assistant');
+    duplicate.setAttribute('data-message-id', `hidden-${hiddenKind}`);
+    duplicate.appendChild(new FakeText('Rejtett részlet'));
+    if (hiddenKind === 'parent-display') parent.style.display = 'none';
+    else parent.setAttribute(hiddenKind, hiddenKind === 'hidden' ? '' : 'true');
+    const hiddenPart = assistantBody.appendChild(new FakeElement('div'));
+    hiddenPart.setAttribute('hidden', ''); hiddenPart.appendChild(new FakeText('Rejtett részlet'));
+    assert.equal(harness.helpers.findAssistantMessageNodes().length, 1, hiddenKind);
+    assert.equal(harness.helpers.captureAssistantSnapshot().lastText, 'A látható teljes fordítás.', hiddenKind);
+  }
+});
+
+test('Prompt előkészítése közben betöltött előzmény után az új submit saját válasza érkezik', async () => {
+  const empty = { count: 0, lastText: '', lastUserKey: '', userKeys: [], userNodeIds: [], assistantNodeIds: [], assistantStableIds: [] };
+  const history = { count: 1, lastText: 'Korábbi válasz', lastUserKey: 'message:old-user', lastUserStableId: 'message:old-user',
+    userKeys: ['message:old-user'], userNodeIds: ['old-user-node'], assistantStableIds: ['message:old-answer'] };
+  const answer = { count: 2, lastText: 'Az új kérés kész fordítása.', lastStableId: 'message:new-answer', lastNodeId: 'new-answer-node',
+    lastUserKey: 'message:new-user', lastUserStableId: 'message:new-user', responseUserKey: 'message:new-user',
+    userKeys: ['message:old-user', 'message:new-user'], userNodeIds: ['old-user-node', 'new-user-node'], lastPending: false };
+  let current = empty;
+  const harness = createHarness({ overrides: { captureAssistantSnapshot: () => current } });
+  const form = harness.document.body.appendChild(new FakeForm());
+  form.appendChild(harness.composer); form.appendChild(harness.sendButton);
+  form.querySelectorAll = (selector) => selector === 'button' ? [harness.sendButton] : [];
+  harness.composer.addEventListener('input', () => { current = history; });
+  let submitted = 0;
+  form.requestSubmit = () => { submitted += 1; current = answer; harness.composer.value = ''; };
+  const result = await harness.window.__gamerTranslatorDeliver({ prompt: 'Új kérés', autoSubmit: true, waitForResponse: true, responseTimeoutMs: 40 });
+  assert.equal(result.ok, true); assert.equal(result.assistantResponseText, answer.lastText);
+  assert.equal(result.assistantResponseComplete, true); assert.equal(submitted, 1);
+});
+
+test('Retry nem veheti fel baseline-nak az első kísérlet már elküldött userét', async () => {
+  const empty = { count: 0, lastText: '', lastUserKey: '', userKeys: [], userNodeIds: [], assistantNodeIds: [], assistantStableIds: [] };
+  const history = { count: 1, lastText: 'Korábbi válasz', lastUserKey: 'message:old-user', lastUserStableId: 'message:old-user',
+    userKeys: ['message:old-user'], userNodeIds: ['old-user-node'], assistantStableIds: ['message:old-answer'] };
+  const answer = { count: 2, lastText: 'Az első beküldés kész fordítása.', lastStableId: 'message:new-answer', lastNodeId: 'new-answer-node',
+    lastUserKey: 'message:new-user', lastUserStableId: 'message:new-user', responseUserKey: 'message:new-user',
+    userKeys: ['message:old-user', 'message:new-user'], userNodeIds: ['old-user-node', 'new-user-node'], lastPending: false };
+  let current = empty;
+  let harness;
+  harness = createHarness({ overrides: {
+    captureAssistantSnapshot: () => current,
+    submitTextMessage: async () => {
+      harness.helpers.captureResponseBaselineBeforeSubmit();
+      current = answer;
+      // Egy későbbi küldési fallback a már látható új user után fut.
+      harness.helpers.captureResponseBaselineBeforeSubmit();
+    },
+  } });
+  harness.composer.addEventListener('input', () => { current = history; });
+  const pending = harness.window.__gamerTranslatorDeliver({ prompt: 'Új kérés', autoSubmit: true, waitForResponse: true, responseTimeoutMs: 40 });
+  await harness.advance(40);
+  const result = await pending;
+  assert.equal(result.ok, true); assert.equal(result.assistantResponseText, answer.lastText);
 });

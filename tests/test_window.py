@@ -26,6 +26,12 @@ class NativeWindowTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def setUp(self):
+        # A natív begépelési próbát nem befolyásolhatja a valódi billentyűzet.
+        modifier_state = patch.object(module.user32, "GetAsyncKeyState", return_value=0)
+        modifier_state.start()
+        self.addCleanup(modifier_state.stop)
+
     def test_only_trusted_https_origins_are_accepted(self):
         for url in ("https://chatgpt.com/", "https://chat.openai.com/c/123", "https://CHATGPT.com:443/"):
             with self.subTest(url=url):

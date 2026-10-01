@@ -16,6 +16,7 @@ A Gamer Translator egy önálló Windows asztali alkalmazás, amely a `chatgpt.c
 - az OCR mód alapértelmezetten bekapcsolt
 - a kész fordítás automatikus visszamásolása a vágólapra
 - a mentett fordítás karakterenkénti begépelése gyorsgombbal
+- a kész válasz felismerése az új ChatGPT üzenetfelületen is
 - gyors chat overlay kézi szövegküldéshez
 - szerkeszthető gyorsgombok lenyomásos rögzítéssel
 - külön AltGr-kezelés, kiosztáshelyes írásjelek és Mouse 4–5 egérgombok gyorsgombként
@@ -123,6 +124,8 @@ A `-SkipDependencyInstall` kapcsolót csak előzetesen telepített és ellenőrz
 - időtúllépés után legfeljebb két percig tovább figyeli a késői választ, az eredeti kéréshez kötve
 
 A részletes működés és a naplók olvasása a [debug rendszer leírásában](docs/debug-system.md) található.
+
+Az Alt+V további javításának oka és ellenőrzése az [Alt+V vizsgálati jelentésében](docs/alt-v-audit.md) szerepel. A vágólapmásolás kikapcsolása mellett is megmarad a kész fordítás a begépelési gyorsgomb számára; részleges válasz nem használható kész fordításként.
 
 ## Megjegyzés
 

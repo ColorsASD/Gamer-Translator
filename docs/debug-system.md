@@ -1,6 +1,8 @@
 # Esemény- és hibanaplózás
 
-Ellenőrzés dátuma: 2026. október 1. Helyi alkalmazásverzió: `5.12`.
+Ellenőrzés dátuma: 2026. október 1. A naplórendszer első kiadása: `5.12`.
+
+A `5.13` kiadásban javított Alt+V, új ChatGPT üzenetfelület és további megszakítási események részletei az [Alt+V vizsgálati jelentésében](alt-v-audit.md) szerepelnek. Az alábbi ellenőrzési eredmények az első, `5.12` kiadáshoz tartoznak.
 
 ## Naplók helye és működése
 

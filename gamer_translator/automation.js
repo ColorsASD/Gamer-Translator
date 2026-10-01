@@ -1,5 +1,5 @@
 (() => {
-  const AUTOMATION_SCRIPT_VERSION = "2026-10-01-1";
+  const AUTOMATION_SCRIPT_VERSION = "2026-10-01-2";
   const TRUSTED_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
   const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
   let deliveryInProgress = false;
@@ -278,9 +278,14 @@
         attributeFilter: [
           "aria-busy",
           "aria-hidden",
+          "aria-label",
           "class",
           "data-message-id",
           "data-message-author-role",
+          "data-chatgpt-selection-message-id",
+          "data-chatgpt-search-message-ids",
+          "data-chatgpt-search-unit-key",
+          "data-conversation-role",
           "data-turn-id",
           "data-state",
           "data-status",
@@ -437,6 +442,7 @@
     const followUps = ensureAssistantResponseFollowUps();
     const existingFollowUp = followUps[normalizedFollowUpProgressCallId];
     let latestText = String(existingFollowUp?.latestText || "");
+    let latestComplete = existingFollowUp?.latestComplete === true;
 
     if (existingFollowUp) {
       existingFollowUp.stopped = true;
@@ -456,7 +462,10 @@
       if (!latestText) {
         try {
           const previousProgress = JSON.parse(window.__gamerTranslatorProgress?.[normalizedFollowUpProgressCallId] || "null");
-          if (previousProgress?.kind === "assistant_response") latestText = String(previousProgress.text || "");
+          if (previousProgress?.kind === "assistant_response") {
+            latestText = String(previousProgress.text || "");
+            latestComplete = previousProgress.complete === true;
+          }
         } catch (_error) {
           // A sérült korábbi jelzés nem blokkolhatja a figyelés lezárását.
         }
@@ -464,7 +473,7 @@
       writeProgressEntry(normalizedFollowUpProgressCallId, {
         kind: latestText ? "assistant_response" : "assistant_response_watch_done",
         done: true,
-        ...(latestText ? { text: latestText } : {})
+        ...(latestText ? { text: latestText, complete: latestComplete } : {})
       });
     }
   }
@@ -537,6 +546,7 @@
       initializeComposerAutoRecovery: initializesWatcher,
       autoSubmit: payload.autoSubmit === true,
       copyResponseToClipboard: payload.copyResponseToClipboard === true && payload.autoSubmit === true,
+      waitForResponse: (payload.waitForResponse === true || payload.copyResponseToClipboard === true) && payload.autoSubmit === true,
       pageReadyTimeoutMs: Math.min(120000, Math.max(20, Number(payload.pageReadyTimeoutMs) || 25000)),
       responseTimeoutMs: Math.min(600000, Math.max(0, Number(payload.responseTimeoutMs) || 0))
     };
@@ -544,6 +554,8 @@
     const composerAutoRecovery = ensureComposerAutoRecoveryWatcher();
     const deliveryStartedAt = Date.now();
     let deliveryStage = "initialization";
+    let assistantSnapshotBeforeSend = null;
+    let responseBaselineCaptured = false;
     const reportDiagnostic = (event, fields = {}) => writeDiagnosticEntry(payload.diagnosticCallId, event, fields);
     const reportProgress = (progress) => {
       writeProgressEntry(payload.progressCallId, progress);
@@ -573,7 +585,7 @@
       }
       reportDiagnostic("delivery_started", { prompt_length: String(payload.prompt || "").length, auto_submit: payload.autoSubmit, copy_response: payload.copyResponseToClipboard });
 
-      const assistantSnapshotBeforeSend = payload.copyResponseToClipboard
+      assistantSnapshotBeforeSend = payload.waitForResponse
         ? captureAssistantSnapshot()
         : { count: 0, lastNodeId: "", lastText: "", lastPending: false };
 
@@ -625,7 +637,7 @@
       let assistantResponseText = "";
       let followUpProgressCallId = "";
 
-      if (payload.copyResponseToClipboard) {
+      if (payload.waitForResponse) {
         deliveryStage = "response";
         const responseResult = await waitForAssistantResponse(assistantSnapshotBeforeSend, payload.responseTimeoutMs, reportProgress);
         assistantResponseText = responseResult.text;
@@ -640,6 +652,7 @@
       return {
         ok: true,
         assistantResponseText,
+        assistantResponseComplete: Boolean(assistantResponseText),
         assistantResponseCopied: false,
         followUpProgressCallId
       };
@@ -847,6 +860,7 @@
           }
 
           if (typeof liveForm.requestSubmit === "function") {
+            captureResponseBaselineBeforeSubmit();
             liveForm.requestSubmit();
             return;
           }
@@ -971,6 +985,7 @@
           }
 
           if (typeof liveForm.requestSubmit === "function") {
+            captureResponseBaselineBeforeSubmit();
             liveForm.requestSubmit();
             return;
           }
@@ -1302,7 +1317,8 @@
         String(snapshot.lastUserKey || ""),
         String(snapshot.responseUserKey || ""),
         String(snapshot.lastText || ""),
-        snapshot.lastPending ? "1" : "0"
+        snapshot.lastPending ? "1" : "0",
+        snapshot.generationPending ? "1" : "0"
       ].join("|");
     }
 
@@ -1516,7 +1532,7 @@
       }
 
       const structuralContainer = composer.closest(
-        'form, [data-testid*="composer" i], [data-testid*="prompt" i], [class*="composer" i], [class*="prompt" i]'
+        '[data-chatgpt-composer], form, [data-testid*="composer" i], [data-testid*="prompt" i], [class*="composer" i], [class*="prompt" i]'
       );
 
       if (structuralContainer instanceof Element && structuralContainer !== composer) {
@@ -1745,9 +1761,17 @@
 
     function getMessageStableId(node) {
       if (!(node instanceof HTMLElement)) return "";
+      const selectionNode = node.hasAttribute("data-chatgpt-selection-message-id") ? node : node.closest("[data-chatgpt-selection-message-id]");
+      const selectionId = selectionNode?.getAttribute("data-chatgpt-selection-message-id");
+      if (selectionId) return `message:${selectionId}`;
       const messageNode = node.hasAttribute("data-message-id") ? node : node.closest("[data-message-id]");
       const messageId = messageNode?.getAttribute("data-message-id");
       if (messageId) return `message:${messageId}`;
+      const searchUnit = node.closest("[data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]");
+      const messageIds = searchUnit?.getAttribute("data-chatgpt-search-message-ids");
+      if (messageIds) return `messages:${messageIds}`;
+      const unitKey = searchUnit?.getAttribute("data-chatgpt-search-unit-key");
+      if (unitKey) return `unit:${unitKey}`;
       const turnNode = node.closest('[data-testid^="conversation-turn-"], [data-turn-id]');
       const turnId = turnNode?.getAttribute("data-turn-id") || turnNode?.getAttribute("data-testid");
       return turnId ? `turn:${turnId}` : "";
@@ -1783,6 +1807,7 @@
         lastStableId: lastEntry?.stableId || "",
         lastText: lastEntry?.text || "",
         lastPending: Boolean(lastEntry?.pending),
+        generationPending: hasActiveGenerationControl(),
         responseUserKey: lastEntry?.userKey || "",
         userCount: userNodes.length,
         lastUserKey: getMessageKey(lastUser),
@@ -1877,27 +1902,9 @@
         };
       }
 
-      if (isUsableAssistantSnapshot(finalSnapshot, previousSnapshot)) {
-        const followUpProgressCallId = startAssistantResponseFollowUp(previousSnapshot, finalSnapshot);
-        reportAssistantSnapshotProgress(finalSnapshot, reportProgress);
-        return {
-          text: finalSnapshot.lastText,
-          copied: false,
-          followUpProgressCallId
-        };
-      }
-
-      if (latestUsableSnapshot && finalSnapshot.lastUserKey === previousSnapshot.requestUserKey) {
-        const followUpProgressCallId = startAssistantResponseFollowUp(previousSnapshot, latestUsableSnapshot);
-        reportAssistantSnapshotProgress(latestUsableSnapshot, reportProgress);
-        return {
-          text: latestUsableSnapshot.lastText,
-          copied: false,
-          followUpProgressCallId
-        };
-      }
-
-      const followUpProgressCallId = startAssistantResponseFollowUp(previousSnapshot, null);
+      const partialSnapshot = isUsableAssistantSnapshot(finalSnapshot, previousSnapshot)
+        ? finalSnapshot : latestUsableSnapshot && finalSnapshot.lastUserKey === previousSnapshot.requestUserKey ? latestUsableSnapshot : null;
+      const followUpProgressCallId = startAssistantResponseFollowUp(previousSnapshot, partialSnapshot);
       reportDiagnostic("response_timeout", { elapsed_ms: Date.now() - startedAt, late: Boolean(followUpProgressCallId) });
       if (followUpProgressCallId) return { text: "", copied: false, responsePending: true, followUpProgressCallId };
       throw new Error("A ChatGPT válasza nem érkezett meg időben.");
@@ -1918,6 +1925,7 @@
         previousSnapshot,
         latestText: String(initialSnapshot?.lastText || ""),
         latestNodeId: String(initialSnapshot?.lastNodeId || ""),
+        latestComplete: initialSnapshot ? isStableAssistantSnapshot(initialSnapshot) : false,
         startedAt: Date.now(),
         timeoutId: 0,
         unsubscribe: null
@@ -1967,10 +1975,11 @@
         if (
           currentSnapshot.lastText === followUpState.latestText
           && currentSnapshot.lastNodeId === followUpState.latestNodeId
+          && isStableAssistantSnapshot(currentSnapshot) === followUpState.latestComplete
         ) {
           scheduleFollowUpStop(
-            currentSnapshot.lastPending
-              ? ASSISTANT_RESPONSE_FOLLOW_UP_IDLE_MS
+            !isStableAssistantSnapshot(currentSnapshot)
+              ? ASSISTANT_RESPONSE_FOLLOW_UP_MAX_MS
               : ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS
           );
           return;
@@ -1978,14 +1987,16 @@
 
         followUpState.latestText = String(currentSnapshot.lastText || "");
         followUpState.latestNodeId = String(currentSnapshot.lastNodeId || "");
+        followUpState.latestComplete = isStableAssistantSnapshot(currentSnapshot);
         writeProgressEntry(followUpProgressCallId, {
           kind: "assistant_response",
-          text: currentSnapshot.lastText
+          text: currentSnapshot.lastText,
+          complete: followUpState.latestComplete
         });
         reportDiagnostic("response_received", { late: !initialSnapshot, text_length: String(currentSnapshot.lastText || "").length, pending: currentSnapshot.lastPending });
         scheduleFollowUpStop(
-          currentSnapshot.lastPending
-            ? ASSISTANT_RESPONSE_FOLLOW_UP_IDLE_MS
+          !isStableAssistantSnapshot(currentSnapshot)
+            ? ASSISTANT_RESPONSE_FOLLOW_UP_MAX_MS
             : ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS
         );
       };
@@ -1994,7 +2005,7 @@
       followUps[followUpProgressCallId] = followUpState;
       scheduleFollowUpStop(
         !initialSnapshot ? ASSISTANT_RESPONSE_FOLLOW_UP_MAX_MS
-          : initialSnapshot.lastPending ? ASSISTANT_RESPONSE_FOLLOW_UP_IDLE_MS : ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS
+          : !isStableAssistantSnapshot(initialSnapshot) ? ASSISTANT_RESPONSE_FOLLOW_UP_MAX_MS : ASSISTANT_RESPONSE_FOLLOW_UP_SETTLE_MS
       );
       return followUpProgressCallId;
     }
@@ -2021,7 +2032,17 @@
         return false;
       }
 
-      return !snapshot.lastPending || isComposerBackInSendState();
+      return !snapshot.lastPending && !snapshot.generationPending;
+    }
+
+    function hasActiveGenerationControl() {
+      const composer = findComposer();
+      const scope = findComposerScope(composer);
+      if (!(scope instanceof Element)) return false;
+      return Array.from(scope.querySelectorAll("button")).some((button) => (
+        button instanceof HTMLButtonElement && isDomAccessibleElement(button)
+        && ["stop", "állj", "leállít", "megszakít"].some((alias) => readButtonLabel(button).includes(alias))
+      ));
     }
 
     function isUsableAssistantSnapshot(snapshot, previousSnapshot) {
@@ -2053,7 +2074,8 @@
 
       reportProgress({
         kind: "assistant_response",
-        text: snapshot.lastText
+        text: snapshot.lastText,
+        complete: isStableAssistantSnapshot(snapshot)
       });
       reportDiagnostic("response_received", { late: false, text_length: snapshot.lastText.length, pending: snapshot.lastPending });
     }
@@ -2176,15 +2198,17 @@
         .filter(isDomTrackableElement)
         .filter((element) => isTopLevelAuthorMessageNode(element, normalizedAuthorRole));
 
-      if (directMatches.length > 0) {
-        return directMatches;
-      }
-
-      const fallbackMatches = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"], article'))
+      const modernMatches = Array.from(document.querySelectorAll(normalizedAuthorRole === "user"
+        ? '[data-user-message-bubble]' : '[data-chatgpt-selection-message-id]'))
+        .filter(isDomTrackableElement)
+        .filter((element) => normalizedAuthorRole === "user" || doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
+      const fallbackMatches = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"], article, [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]'))
         .filter(isDomTrackableElement)
         .filter((element) => doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
-
-      return Array.from(new Set(fallbackMatches));
+      const matches = Array.from(new Set([...directMatches, ...modernMatches, ...fallbackMatches]));
+      // A belső szerep-node elsőbbséget élvez a körülötte álló article helyett.
+      const deduplicated = matches.filter((element) => !matches.some((other) => other !== element && element.contains(other)));
+      return deduplicated.sort((left, right) => left.compareDocumentPosition(right) & 4 ? -1 : left.compareDocumentPosition(right) & 2 ? 1 : 0);
     }
 
     function isTopLevelAuthorMessageNode(element, authorRole) {
@@ -2211,6 +2235,17 @@
 
       if (!normalizedAuthorRole) {
         return false;
+      }
+
+      const modernUnit = element.closest('[data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]');
+      const roleHeading = Array.from(modernUnit?.children || []).find((child) => (
+        child instanceof HTMLElement && child.hasAttribute("data-conversation-role")
+      ));
+      const modernRole = String(roleHeading?.getAttribute("data-conversation-role") || "").trim().toLowerCase();
+      if (modernRole) return modernRole === normalizedAuthorRole;
+      if (element.hasAttribute("data-user-message-bubble")
+          || (modernUnit === element && element.querySelector('[data-user-message-bubble]'))) {
+        return normalizedAuthorRole === "user";
       }
 
       const authorHints = [
@@ -2244,33 +2279,19 @@
     }
 
     function extractMessageText(element) {
-      const structuredText = normalizeStructuredDomText(readStructuredDomText(element));
-
-      if (structuredText) {
-        return structuredText;
-      }
-
       const preferredContainers = [
+        ...Array.from(element.querySelectorAll('[data-markdown-text-style], .markdown, [class*="markdown"], [class*="prose"]')),
+        element.querySelector('[data-markdown-text-style]'),
         element.querySelector(".markdown"),
         element.querySelector('[class*="markdown"]'),
-        element.querySelector('[class*="prose"]'),
-        element
+        element.querySelector('[class*="prose"]')
       ];
-
-      for (const container of preferredContainers) {
-        if (!(container instanceof HTMLElement)) {
-          continue;
-        }
-
-        const text = normalizeStructuredDomText(readStructuredDomText(container))
-          || normalizeWhitespace(container.textContent);
-
-        if (text) {
-          return text;
-        }
-      }
-
-      return "";
+      const uniqueContainers = Array.from(new Set(preferredContainers)).filter((container) => container instanceof HTMLElement);
+      const textContainers = uniqueContainers.filter((container) => !uniqueContainers.some((other) => other !== container && other.contains(container)));
+      textContainers.sort((left, right) => left.compareDocumentPosition(right) & 4 ? -1 : left.compareDocumentPosition(right) & 2 ? 1 : 0);
+      const text = normalizeStructuredDomText(textContainers.map((container) => readStructuredDomText(container)).filter(Boolean).join("\n\n"));
+      if (text) return text;
+      return normalizeStructuredDomText(readStructuredDomText(element));
     }
 
     function isDomTrackableElement(element) {
@@ -2282,7 +2303,7 @@
         return false;
       }
 
-      return true;
+      return !isSemanticallyHidden(element);
     }
 
     function isSemanticallyHidden(element) {
@@ -2298,9 +2319,13 @@
         return true;
       }
 
-      const style = window.getComputedStyle(element);
-
-      return style.display === "none" || style.visibility === "hidden";
+      // A viewporton kívüli üzenet továbbra is olvasható. A CSS-sel elrejtett
+      // szülő viszont a belső üzenetet is elrejti, annak saját display értékétől függetlenül.
+      for (let current = element; current instanceof HTMLElement; current = current.parentElement) {
+        const style = window.getComputedStyle(current);
+        if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return true;
+      }
+      return false;
     }
 
     function isDomAccessibleElement(element) {
@@ -2371,7 +2396,8 @@
 
         const tagName = node.tagName.toUpperCase();
 
-        if (DOM_TEXT_SKIP_TAGS.has(tagName)) {
+        if (DOM_TEXT_SKIP_TAGS.has(tagName)
+          || (/^H[1-6]$/.test(tagName) && String(node.getAttribute("class") || "").split(/\s+/).includes("sr-only"))) {
           return;
         }
 
@@ -2380,7 +2406,7 @@
           return;
         }
 
-        if (node.getAttribute("aria-hidden") === "true" && !node.hasAttribute("data-message-author-role")) {
+        if (isSemanticallyHidden(node)) {
           return;
         }
 
@@ -3107,7 +3133,17 @@
       throw new Error(failureMessage);
     }
 
+    function captureResponseBaselineBeforeSubmit() {
+      if (!payload.waitForResponse || responseBaselineCaptured) return;
+      // A composer és a feltöltés várakozása közben érkező előzmény nem új kérés.
+      // Retry során viszont már az első próbálkozás userét kell megőriznünk.
+      assistantSnapshotBeforeSend = captureAssistantSnapshot();
+      responseBaselineCaptured = true;
+      reportDiagnostic("response_baseline", { user_count: assistantSnapshotBeforeSend.userCount, assistant_count: assistantSnapshotBeforeSend.count });
+    }
+
     function fireClickSequence(element) {
+      captureResponseBaselineBeforeSubmit();
       element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", isPrimary: true }));
       element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
       element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", isPrimary: true }));
@@ -3117,6 +3153,7 @@
 
     function dispatchFormSubmit(form) {
       try {
+        captureResponseBaselineBeforeSubmit();
         form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       } catch (_error) {
         // Ha a submit event nem megy át, jön a következő fallback.
@@ -3124,6 +3161,7 @@
     }
 
     function dispatchEnterSequence(element) {
+      captureResponseBaselineBeforeSubmit();
       const events = [
         new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", code: "Enter", keyCode: 13, which: 13 }),
         new KeyboardEvent("keypress", { bubbles: true, cancelable: true, key: "Enter", code: "Enter", keyCode: 13, which: 13 }),
