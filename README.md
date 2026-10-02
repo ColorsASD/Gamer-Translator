@@ -127,6 +127,8 @@ A részletes működés és a naplók olvasása a [debug rendszer leírásában]
 
 Az Alt+V további javításának oka és ellenőrzése az [Alt+V vizsgálati jelentésében](docs/alt-v-audit.md) szerepel. A vágólapmásolás kikapcsolása mellett is megmarad a kész fordítás a begépelési gyorsgomb számára; részleges válasz nem használható kész fordításként.
 
+A szövegbuborék nélküli képes kérések válaszfelismerésének javítása és a válasz elutasításának részletesebb naplózása a [képes válaszfelismerés vizsgálati jelentésében](docs/image-response-audit.md) szerepel.
+
 ## Megjegyzés
 
 - A projekt nem az OpenAI API-t használja, hanem a webes ChatGPT felületet.

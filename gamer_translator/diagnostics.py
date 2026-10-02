@@ -34,7 +34,17 @@ _LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TOKEN_FIELDS = frozenset({
     "action", "stage", "kind", "reason", "error_type", "state", "mode",
     "engine", "result", "trigger", "source", "code", "severity", "method",
+    "user_role_source", "rejection_reason",
 })
+_ENUM_TOKEN_VALUES = {
+    "user_role_source": frozenset({
+        "none", "message_author", "user_bubble", "conversation_role", "aria_role", "role_conflict",
+    }),
+    "rejection_reason": frozenset({
+        "none", "request_user_unbound", "last_user_mismatch", "response_user_mismatch",
+        "assistant_identity_old", "assistant_text_missing", "assistant_text_transient", "assistant_pending",
+    }),
+}
 _NUMBER_FIELDS = frozenset({
     "duration_ms", "elapsed_ms", "timeout_ms", "interval_ms", "attempt", "count",
     "queue_size", "dropped_count", "write_failures", "clipboard_sequence", "generation",
@@ -55,6 +65,8 @@ _BOOL_FIELDS = frozenset({
     "ocr_enabled", "game_mode_enabled", "loading", "background", "gpu_enabled",
     "followup", "response_pending", "main_window_visible", "minimized", "pending", "fresh",
     "stable", "has_identity", "auto_submit", "copy_response", "late", "ok",
+    "request_user_bound", "last_user_matches_request", "response_user_matches_request",
+    "assistant_identity_new",
 })
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _KNOWN_FILES = {
@@ -95,7 +107,9 @@ def _metadata(fields: dict[str, Any]) -> dict[str, Any]:
             if -10**18 <= value <= 10**18 and (type(value) is int or math.isfinite(value)):
                 result[key] = value
         elif key in _TOKEN_FIELDS and (token := _safe_token(value)) is not None:
-            result[key] = token
+            allowed_values = _ENUM_TOKEN_VALUES.get(key)
+            if allowed_values is None or token in allowed_values:
+                result[key] = token
     return result
 
 

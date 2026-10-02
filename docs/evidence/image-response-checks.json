@@ -1,0 +1,116 @@
+{
+  "checkedAt": "2026-10-02T21:15:03.335216+00:00",
+  "appVersion": "5.14",
+  "baseCommit": "a09db7984a5f6f2b39245a87ba76567c5364fb50",
+  "pythonTests": {
+    "passed": 302,
+    "failed": 0,
+    "skipped": 0
+  },
+  "javascriptTests": {
+    "passed": 45,
+    "failed": 0,
+    "skipped": 0
+  },
+  "modernChromiumTests": {
+    "passed": 10,
+    "includedInPythonSuite": true,
+    "networkRequests": 0
+  },
+  "originalV513Reproduction": {
+    "assistantCount": 2,
+    "userCount": 1,
+    "pending": false,
+    "generationPending": false,
+    "textLength": 21,
+    "timeout": true,
+    "networkRequests": 0,
+    "javascriptConsoleErrors": 0
+  },
+  "build": {
+    "bytes": 381565279,
+    "sha256": "370a149240ec0a5c3eaa8b4e981c26e8fd4b8fa2abc44d7040079b7fcd9167b2",
+    "passed": 34,
+    "failed": 0,
+    "checks": {
+      "source:main.py": true,
+      "source:gamer_translator/defaults.py": true,
+      "source:gamer_translator/diagnostics.py": true,
+      "source:gamer_translator/hotkeys.py": true,
+      "source:gamer_translator/main_window.py": true,
+      "source:gamer_translator/ocr_service.py": true,
+      "source:gamer_translator/self_test.py": true,
+      "source:gamer_translator/settings_store.py": true,
+      "asset:gamer_translator/automation.js": true,
+      "asset:gamer_translator/assets/icon-128.png": true,
+      "runtime:QtWebEngineProcess.exe": true,
+      "runtime:Qt6WebEngineCore.dll": true,
+      "runtime:qtwebengine_resources.pak": true,
+      "runtime:icudtl.dat": true,
+      "runtime:qwindows.dll": true,
+      "runtime:onnxruntime_pybind11_state.pyd": true,
+      "runtime:Windows OCR": true,
+      "runtime:WinRT runtime": true,
+      "runtime:RapidOCR data": true,
+      "runtime:wordfreq Hungarian": true,
+      "runtime:wordfreq English": true,
+      "runtime:verified python3.dll": true,
+      "runtime:verified python313.dll": true,
+      "runtime:verified _ssl.pyd": true,
+      "runtime:verified libssl-3.dll": true,
+      "runtime:verified libcrypto-3.dll": true,
+      "runtime:verified PySide6/QtCore.pyd": true,
+      "runtime:verified PySide6/Qt6Core.dll": true,
+      "runtime:verified PySide6/pyside6.abi3.dll": true,
+      "runtime:verified shiboken6/Shiboken.pyd": true,
+      "runtime:verified shiboken6/shiboken6.abi3.dll": true,
+      "runtime:Windows ICU not bundled": true,
+      "runtime:Qt ICU exports available from Windows": true,
+      "PE:Windows x64 GUI": true
+    },
+    "sourceSha256": {
+      "main.py": "5e7341f37ed30776cbae027c967d1b3fbb11ae177aceb3c2ce17d19a309251e9",
+      "gamer_translator/defaults.py": "ffb54548a26a21ebfbccacbc2053f74c8466a716bf6f0ddefe87c32413b13b2d",
+      "gamer_translator/diagnostics.py": "5a19d23867c17f156472689840b8d3889a130837a176154c5f4a8322b8dcb0da",
+      "gamer_translator/hotkeys.py": "0cc11e1ff7470ce8ff9361a01a94f54877a5b2a5ff824852ea6e83c73a5bfa19",
+      "gamer_translator/main_window.py": "570b6198fd59540a67d2bf1591a8e7b85a1727bb13bd9aced486a8d74bdd680b",
+      "gamer_translator/ocr_service.py": "0a4370c908d2e4bc7e01dde93a1930c3773c70929066c648d28e057e9e53b3e9",
+      "gamer_translator/self_test.py": "052dc7cfb00143bc4adeae7f2448ce337945e6f016e768fe31e347b20abf299b",
+      "gamer_translator/settings_store.py": "a76805fd0a4d92ed9020b6cc1751e65ec7ff809d01d46b4a95f1cc1a726357fd"
+    }
+  },
+  "frozenSelfTest": {
+    "passed": 9,
+    "failed": 0,
+    "checks": {
+      "window_and_webengine_start": true,
+      "isolated_profile_and_clipboard": true,
+      "repeated_quick_chat_response_storage_overlay_hide_show": true,
+      "clipboard_requires_screen_clip_hotkey": true,
+      "png_attachment_native_pipeline": true,
+      "role_heading_image_response_binding": true,
+      "no_network_requests_or_native_hotkeys": true,
+      "native_rapidocr_and_windows_inference": true,
+      "clean_window_shutdown": true
+    },
+    "quickChatCycles": 53,
+    "modernImageRequests": 2,
+    "elapsedSeconds": 63.516,
+    "rapidOCR": "Hello gamer",
+    "windowsOCR": "Hello gamer",
+    "networkRequests": 0,
+    "nativeHotkeys": 0
+  },
+  "limits": {
+    "authenticatedNewChatGPTRequestTested": false,
+    "gameplayTested": false,
+    "exactLiveDOMVariantConfirmed": false
+  },
+  "localInstallation": {
+    "binaryMatchesVerified": true,
+    "normalStartupValidated": true,
+    "browserLoaded": true,
+    "automationInjected": true,
+    "startupErrors": 0
+  }
+}

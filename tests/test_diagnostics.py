@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from gamer_translator import diagnostics as module
+from tools import read_diagnostics
 
 
 class DiagnosticsTests(unittest.TestCase):
@@ -120,6 +121,90 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertNotIn("secret", raw)
         self.assertNotIn("private-person", raw)
         self.assertNotIn("raise ValueError", raw)
+
+    def test_response_binding_metadata_survives_writer_reader_and_formatting(self) -> None:
+        request_id = uuid.uuid4().hex
+        fields = {
+            "assistant_count": 2,
+            "user_count": 1,
+            "text_length": 29,
+            "elapsed_ms": 6000.5,
+            "pending": False,
+            "stable": True,
+            "fresh": False,
+            "request_user_bound": True,
+            "last_user_matches_request": True,
+            "response_user_matches_request": False,
+            "assistant_identity_new": True,
+            "user_role_source": "conversation_role",
+            "rejection_reason": "response_user_mismatch",
+        }
+        private_fields = {
+            "message_id": "private-user-message-1",
+            "assistant_identity": "private-assistant-message-2",
+            "response_user_id": "private-user-message-1",
+            "request_user_id": "private-user-message-1",
+            "last_user_id": "private-user-message-1",
+            "text": "private translation text",
+            "token": "private-access-token",
+            "url": "https://private.example/conversation",
+        }
+        module.setup_diagnostics(self.root)
+        module.log_event("page.response.snapshot", request_id=request_id, **fields, **private_fields)
+        module.shutdown_diagnostics()
+        record = next(record for record in self.records() if record["event"] == "page.response.snapshot")
+        self.assertEqual(record["request_id"], request_id)
+        stats = read_diagnostics.ReadStats()
+        read_record = next(record for record in read_diagnostics.iter_records(self.root / "logs", stats)
+                           if record["event"] == "page.response.snapshot")
+        self.assertEqual(stats.skipped_lines, 0)
+        for candidate in (record, read_record):
+            for key, value in fields.items():
+                with self.subTest(source="writer" if candidate is record else "reader", field=key):
+                    self.assertEqual(candidate[key], value)
+                    self.assertIs(type(candidate[key]), type(value))
+            for key in private_fields:
+                self.assertNotIn(key, candidate)
+        rendered = read_diagnostics.format_record(read_record)
+        for key, value in fields.items():
+            expected = str(value).lower() if type(value) is bool else str(value)
+            self.assertIn(f"{key}={expected}", rendered)
+        raw = (self.root / "logs" / module.LOG_FILENAME).read_text(encoding="utf-8")
+        self.assertNotIn("private", raw + rendered)
+
+    def test_response_binding_metadata_rejects_wrong_types_and_content(self) -> None:
+        bool_fields = (
+            "request_user_bound", "last_user_matches_request", "response_user_matches_request",
+            "assistant_identity_new",
+        )
+        for key in bool_fields:
+            for value in (0, 1, "true", "private-message-id", None, [], {}):
+                with self.subTest(field=key, value=value):
+                    self.assertEqual(module._metadata({key: value}), {})
+        for key in ("user_role_source", "rejection_reason"):
+            for value in (
+                True, 42, None, [], {}, "private response text", "https://private.example", "x" * 65,
+                "private_user_id", "private-access-token", "9dc3f0d1-f983-4b65-80b5-ab5e6da4265b",
+            ):
+                with self.subTest(field=key, value=value):
+                    self.assertEqual(module._metadata({key: value}), {})
+        expected_values = {
+            "user_role_source": (
+                "none", "message_author", "user_bubble", "conversation_role", "aria_role", "role_conflict",
+            ),
+            "rejection_reason": (
+                "none", "request_user_unbound", "last_user_mismatch", "response_user_mismatch",
+                "assistant_identity_old", "assistant_text_missing", "assistant_text_transient", "assistant_pending",
+            ),
+        }
+        for key, values in expected_values.items():
+            for value in values:
+                with self.subTest(field=key, value=value):
+                    self.assertEqual(module._metadata({key: value}), {key: value})
+        for key in ("assistant_count", "user_count", "text_length"):
+            for value in (True, "2", None, [], {}):
+                with self.subTest(field=key, value=value):
+                    self.assertEqual(module._metadata({key: value}), {})
 
     def test_same_setup_is_idempotent_and_new_root_starts_a_new_session(self) -> None:
         module.setup_diagnostics(self.root, app_version="5.12")

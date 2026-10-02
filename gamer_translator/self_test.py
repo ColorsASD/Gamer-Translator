@@ -55,6 +55,55 @@ document.querySelector('form').addEventListener('submit', event => {
 });</script></body></html>"""
 
 
+MODERN_IMAGE_FIXTURE = """<!doctype html><html lang="hu"><head><meta charset="utf-8">
+<link rel="icon" href="data:,"><title>Offline képes szerepfejléc-próba</title></head>
+<body><main id="conversation">
+<div data-message-author-role="user" data-message-id="history-user">Korábbi kérés.</div>
+<div data-message-author-role="assistant" data-message-id="history-assistant">Korábbi kész válasz.</div>
+</main><form><div data-testid="composer"><textarea id="prompt-textarea"></textarea>
+<input id="attachment" type="file" accept="image/*">
+<button data-testid="send-button" type="submit" aria-label="Send message">Send</button>
+</div></form><script>
+const composer=document.querySelector('textarea'), send=document.querySelector('button');
+const attachment=document.querySelector('#attachment');
+document.body.dataset.submitCount='0';
+attachment.addEventListener('change',()=>{
+  const preview=document.createElement('img');
+  preview.src=URL.createObjectURL(attachment.files[0]); document.querySelector('form').append(preview);
+});
+document.querySelector('form').addEventListener('submit',event=>{
+  event.preventDefault(); const count=Number(document.body.dataset.submitCount)+1;
+  document.body.dataset.submitCount=String(count);
+  document.body.dataset.fileCount=String(attachment.files.length);
+  document.body.dataset.promptLength=String(composer.value.length);
+  document.body.dataset.finished='false';
+  const turn=document.createElement('div'); turn.dataset.turnKey='modern-turn-'+count;
+  const user=document.createElement('div'); user.dataset.messageId='modern-user-'+count;
+  const headingWrapper=document.createElement('div'), headingInner=document.createElement('div');
+  const heading=document.createElement('h5'); heading.dataset.conversationRole='user';
+  heading.className='sr-only'; heading.textContent='You said:';
+  headingInner.append(heading); headingWrapper.append(headingInner); user.append(headingWrapper);
+  const content=document.createElement('div'), image=document.createElement('img');
+  image.src=URL.createObjectURL(attachment.files[0]); image.width=32; image.height=32;
+  content.append(image); user.append(content); turn.append(user);
+  const answer=document.createElement('div'); answer.dataset.messageId='modern-assistant-'+count;
+  answer.setAttribute('aria-busy','true');
+  const answerHeading=document.createElement('h4'); answerHeading.dataset.conversationRole='assistant';
+  answerHeading.className='sr-only'; answerHeading.textContent='ChatGPT said:';
+  const markdown=document.createElement('div'); markdown.dataset.markdownTextStyle='';
+  markdown.textContent='Folyamatban lévő részlet'; answer.append(answerHeading,markdown);
+  turn.append(answer); document.querySelector('main').append(turn);
+  composer.value=''; attachment.value='';
+  for(const preview of document.querySelectorAll('form img')){URL.revokeObjectURL(preview.src);preview.remove();}
+  send.setAttribute('aria-label','Stop'); send.dataset.testid='stop-button';
+  setTimeout(()=>{markdown.textContent='Modern képfordítás elkészült.';},60);
+  setTimeout(()=>{
+    answer.setAttribute('aria-busy','false'); send.setAttribute('aria-label','Send message');
+    send.dataset.testid='send-button'; document.body.dataset.finished='true';
+  },220);
+});</script></body></html>"""
+
+
 class MemoryClipboard(QObject):
     """Csak az alkalmazáspéldány memóriájában létezik, nem a Windows vágólapján."""
     changed = Signal(object)
@@ -232,6 +281,49 @@ def run_self_test(report_path: Path, duration: int, model_dir: Path | None = Non
             window.screen_clip_hotkey_enabled.setChecked(False)
             report["checks"]["clipboard_requires_screen_clip_hotkey"] = True
             report["checks"]["png_attachment_native_pipeline"] = True
+
+            # A régi felismert beszélgetés után a képes kérésnek csak mély
+            # szerepfejléce és saját üzenetazonosítója van, szöveges buborék nélkül.
+            loaded = []
+            window.page.loadFinished.connect(loaded.append)
+            window.page.setHtml(MODERN_IMAGE_FIXTURE, QUrl("https://chatgpt.com/"))
+            deadline = time.monotonic() + 20
+            while not loaded and time.monotonic() < deadline:
+                window._wait_with_events(30)
+            window.page.loadFinished.disconnect(loaded.append)
+            assert loaded == [True], "A modern képes offline oldal nem töltődött be."
+            window._ensure_automation_ready()
+            window.screen_clip_hotkey_enabled.setChecked(True)
+            window.test_clipboard.setImage(image)
+            window._wait_with_events(250)
+            assert window._run_javascript("document.body.dataset.submitCount", timeout_ms=5000) == "0"
+            assert window.pending_clipboard_payload is None
+            request_ids = []
+            for expected_count in (1, 2):
+                window._arm_screen_clip_hotkey()
+                window.test_clipboard.setImage(image)
+                window._wait_with_events(250)
+                assert int(window._run_javascript("document.body.dataset.submitCount", timeout_ms=5000)) == expected_count
+                assert window._run_javascript("document.body.dataset.fileCount", timeout_ms=5000) == "1"
+                assert window._run_javascript("document.body.dataset.promptLength", timeout_ms=5000) == "0"
+                assert window._run_javascript("document.body.dataset.finished", timeout_ms=5000) == "true"
+                assert window.last_translated_text == "Modern képfordítás elkészült.", window.last_run_status
+                assert window.test_clipboard.text == window.last_translated_text
+                assert store.load_last_translated_text() == window.last_translated_text
+                assert window.translation_result_complete
+                assert window.translation_result_request_id == window.latest_translation_request_id
+                request_ids.append(window.translation_result_request_id)
+                assert not window.browser_interaction_active and not window.clipboard_translation_in_progress
+            assert request_ids[0] and request_ids[1] and request_ids[0] != request_ids[1]
+            modern_user_count = window._run_javascript(
+                "document.querySelectorAll('[data-message-id^=\"modern-user-\"] img').length", timeout_ms=5000,
+            )
+            assert modern_user_count == 2, "Mindkét szöveg nélküli képkérésnek saját kép kell."
+            window.test_clipboard.setImage(image)
+            window._wait_with_events(250)
+            assert window._run_javascript("document.body.dataset.submitCount", timeout_ms=5000) == "2"
+            window.screen_clip_hotkey_enabled.setChecked(False)
+            report["checks"]["role_heading_image_response_binding"] = True
             assert not window.network_blocker.blocked
             assert not window.registered_hotkeys and window.keyboard_hook_handle is None and window.mouse_hook_handle is None
             report["checks"]["no_network_requests_or_native_hotkeys"] = True
@@ -260,6 +352,8 @@ def run_self_test(report_path: Path, duration: int, model_dir: Path | None = Non
                 report["checks"]["native_rapidocr_and_windows_inference"] = True
             else:
                 report["ocr"] = {"tested": False, "reason": "A --self-test-model-dir nem lett megadva."}
+            assert not window.network_blocker.blocked
+            assert not window.registered_hotkeys and window.keyboard_hook_handle is None and window.mouse_hook_handle is None
             result = 0
         except Exception:
             report["error"] = traceback.format_exc()

@@ -4,6 +4,8 @@ Ellenőrzés dátuma: 2026. október 1. A naplórendszer első kiadása: `5.12`.
 
 A `5.13` kiadásban javított Alt+V, új ChatGPT üzenetfelület és további megszakítási események részletei az [Alt+V vizsgálati jelentésében](alt-v-audit.md) szerepelnek. Az alábbi ellenőrzési eredmények az első, `5.12` kiadáshoz tartoznak.
 
+A `5.14` képes válaszfelismerési javítása és a kéréshez kötés új diagnosztikai mezői a [képes válaszfelismerés vizsgálati jelentésében](image-response-audit.md) szerepelnek.
+
 ## Naplók helye és működése
 
 A normál alkalmazás automatikusan JSONL eseménynaplót ír a `%LOCALAPPDATA%\Gamer Translator\logs` könyvtárba. A Beállítások `Naplómappa megnyitása` gombja ezt a könyvtárat nyitja meg. A napló nem kerül feltöltésre.

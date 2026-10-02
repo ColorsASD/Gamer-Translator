@@ -1,5 +1,5 @@
 (() => {
-  const AUTOMATION_SCRIPT_VERSION = "2026-10-01-2";
+  const AUTOMATION_SCRIPT_VERSION = "2026-10-02-1";
   const TRUSTED_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
   const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
   let deliveryInProgress = false;
@@ -414,10 +414,23 @@
       "stage", "reason", "kind", "method", "attempt", "elapsed_ms", "timeout_ms",
       "prompt_length", "image_bytes", "attachment_count", "file_count", "pending",
       "assistant_count", "user_count", "text_length", "fresh", "stable", "has_identity",
+      "request_user_bound", "last_user_matches_request", "response_user_matches_request",
+      "assistant_identity_new", "user_role_source", "rejection_reason",
       "auto_submit", "copy_response", "late", "ok"
+    ]);
+    const bindingBooleanFields = new Set([
+      "request_user_bound", "last_user_matches_request", "response_user_matches_request", "assistant_identity_new"
+    ]);
+    const roleSources = new Set(["none", "message_author", "user_bubble", "conversation_role", "aria_role", "role_conflict"]);
+    const rejectionReasons = new Set([
+      "none", "request_user_unbound", "last_user_mismatch", "response_user_mismatch", "assistant_identity_old",
+      "assistant_text_missing", "assistant_text_transient", "assistant_pending"
     ]);
     for (const [key, value] of Object.entries(fields)) {
       if (!allowedFields.has(key)) continue;
+      if (bindingBooleanFields.has(key) && typeof value !== "boolean") continue;
+      if (key === "user_role_source" && !roleSources.has(value)) continue;
+      if (key === "rejection_reason" && !rejectionReasons.has(value)) continue;
       if (typeof value === "boolean") safeFields[key] = value;
       else if (typeof value === "number" && Number.isFinite(value)) safeFields[key] = Math.max(0, Math.min(100000000, value));
       else if (typeof value === "string" && /^[a-z][a-z0-9_]{0,39}$/.test(value)) safeFields[key] = value;
@@ -1813,6 +1826,7 @@
         lastUserKey: getMessageKey(lastUser),
         lastUserStableId: getMessageStableId(lastUser),
         lastUserNodeId: lastUser ? getDomNodeId(lastUser) : "",
+        lastUserRoleSource: lastUser ? getMessageAuthorEvidence(lastUser).source : "none",
         userKeys: userNodes.map(getMessageKey),
         userNodeIds: userNodes.map(getDomNodeId),
         userStableIds: userNodes.map(getMessageStableId).filter(Boolean),
@@ -1827,11 +1841,11 @@
       let nextKey = "";
       if (!previousSnapshot.lastUserKey) {
         nextKey = currentSnapshot.userKeys?.[0] || "";
-      } else if (previousSnapshot.lastUserStableId && currentSnapshot.lastUserStableId) {
+      } else if (previousSnapshot.lastUserStableId) {
         const previousIndex = (currentSnapshot.userKeys || []).indexOf(previousSnapshot.lastUserKey);
         nextKey = previousIndex >= 0
           ? currentSnapshot.userKeys?.[previousIndex + 1] || ""
-          : (!previousKeys.includes(currentSnapshot.lastUserKey) ? currentSnapshot.lastUserKey : "");
+          : (currentSnapshot.lastUserStableId && !previousKeys.includes(currentSnapshot.lastUserKey) ? currentSnapshot.lastUserKey : "");
       } else {
         // Stabil azonosító hiányában a régi felhasználói node megmaradása igazol
         // új kört. A teljes DOM újrarajzolása és a virtualizáció önmagában nem.
@@ -1845,11 +1859,8 @@
       let observedSnapshot = captureAssistantSnapshot();
       let latestUsableSnapshot = null;
       const startedAt = Date.now();
-      const recordSnapshot = (snapshot) => reportDiagnostic("response_snapshot", {
-        assistant_count: snapshot.count, user_count: snapshot.userCount, text_length: String(snapshot.lastText || "").length,
-        pending: snapshot.lastPending, has_identity: Boolean(snapshot.lastStableId),
-        fresh: isFreshAssistantSnapshot(snapshot, previousSnapshot), stable: isStableAssistantSnapshot(snapshot),
-        elapsed_ms: Date.now() - startedAt
+      const recordSnapshot = (snapshot) => reportAssistantSnapshotDiagnostic(snapshot, previousSnapshot, {
+        elapsed_ms: Date.now() - startedAt, late: false
       });
       reportDiagnostic("response_wait_started", { timeout_ms: timeoutMs });
       recordSnapshot(observedSnapshot);
@@ -1962,6 +1973,9 @@
 
         const currentSnapshot = captureAssistantSnapshot();
         bindResponseUserTurn(previousSnapshot, currentSnapshot);
+        reportAssistantSnapshotDiagnostic(currentSnapshot, previousSnapshot, {
+          elapsed_ms: Date.now() - followUpState.startedAt, late: !initialSnapshot
+        });
         if (previousSnapshot.requestUserKey && currentSnapshot.lastUserKey !== previousSnapshot.requestUserKey) {
           reportDiagnostic("response_watch_finished", { reason: "user_turn_changed", elapsed_ms: Date.now() - followUpState.startedAt });
           stopAssistantResponseFollowUp(followUpProgressCallId);
@@ -2019,6 +2033,37 @@
         return !(previousSnapshot.assistantStableIds || []).includes(currentSnapshot.lastStableId);
       }
       return !(previousSnapshot.assistantNodeIds || []).includes(currentSnapshot.lastNodeId);
+    }
+
+    function reportAssistantSnapshotDiagnostic(snapshot, previousSnapshot, fields = {}) {
+      if (snapshot && previousSnapshot) bindResponseUserTurn(previousSnapshot, snapshot);
+      const fresh = isFreshAssistantSnapshot(snapshot, previousSnapshot);
+      const requestUserKey = previousSnapshot?.requestUserKey || "";
+      const requestUserBound = Boolean(requestUserKey);
+      const lastUserMatchesRequest = requestUserBound && snapshot?.lastUserKey === requestUserKey;
+      const responseUserMatchesRequest = requestUserBound && snapshot?.responseUserKey === requestUserKey;
+      const assistantIdentityNew = Boolean(snapshot?.lastStableId || snapshot?.lastNodeId)
+        && (snapshot.lastStableId
+          ? !(previousSnapshot?.assistantStableIds || []).includes(snapshot.lastStableId)
+          : !(previousSnapshot?.assistantNodeIds || []).includes(snapshot.lastNodeId));
+      const stable = isStableAssistantSnapshot(snapshot);
+      let rejectionReason = "none";
+      if (!requestUserBound) rejectionReason = "request_user_unbound";
+      else if (!lastUserMatchesRequest) rejectionReason = "last_user_mismatch";
+      else if (!responseUserMatchesRequest) rejectionReason = "response_user_mismatch";
+      else if (!assistantIdentityNew) rejectionReason = "assistant_identity_old";
+      else if (!snapshot?.lastText) rejectionReason = "assistant_text_missing";
+      else if (isTransientAssistantText(snapshot.lastText)) rejectionReason = "assistant_text_transient";
+      else if (!stable) rejectionReason = "assistant_pending";
+      reportDiagnostic("response_snapshot", {
+        assistant_count: snapshot?.count || 0, user_count: snapshot?.userCount || 0,
+        text_length: String(snapshot?.lastText || "").length, pending: Boolean(snapshot?.lastPending),
+        has_identity: Boolean(snapshot?.lastStableId), fresh, stable,
+        request_user_bound: requestUserBound, last_user_matches_request: lastUserMatchesRequest,
+        response_user_matches_request: responseUserMatchesRequest, assistant_identity_new: assistantIdentityNew,
+        user_role_source: snapshot?.lastUserRoleSource || "none", rejection_reason: rejectionReason,
+        ...fields
+      });
     }
 
     function isStableAssistantSnapshot(snapshot) {
@@ -2196,16 +2241,21 @@
 
       const directMatches = Array.from(document.querySelectorAll(`[data-message-author-role="${normalizedAuthorRole}"]`))
         .filter(isDomTrackableElement)
-        .filter((element) => isTopLevelAuthorMessageNode(element, normalizedAuthorRole));
+        .filter((element) => isTopLevelAuthorMessageNode(element, normalizedAuthorRole))
+        .filter((element) => doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
 
       const modernMatches = Array.from(document.querySelectorAll(normalizedAuthorRole === "user"
         ? '[data-user-message-bubble]' : '[data-chatgpt-selection-message-id]'))
         .filter(isDomTrackableElement)
-        .filter((element) => normalizedAuthorRole === "user" || doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
+        .filter((element) => doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
+      const roleScopeMatches = Array.from(document.querySelectorAll('[data-conversation-role]'))
+        .filter(isDomTrackableElement)
+        .map(findConversationRoleMessageScope)
+        .filter((element) => element && doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
       const fallbackMatches = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"], article, [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]'))
         .filter(isDomTrackableElement)
         .filter((element) => doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
-      const matches = Array.from(new Set([...directMatches, ...modernMatches, ...fallbackMatches]));
+      const matches = Array.from(new Set([...directMatches, ...modernMatches, ...roleScopeMatches, ...fallbackMatches]));
       // A belső szerep-node elsőbbséget élvez a körülötte álló article helyett.
       const deduplicated = matches.filter((element) => !matches.some((other) => other !== element && element.contains(other)));
       return deduplicated.sort((left, right) => left.compareDocumentPosition(right) & 4 ? -1 : left.compareDocumentPosition(right) & 2 ? 1 : 0);
@@ -2237,33 +2287,8 @@
         return false;
       }
 
-      const modernUnit = element.closest('[data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]');
-      const roleHeading = Array.from(modernUnit?.children || []).find((child) => (
-        child instanceof HTMLElement && child.hasAttribute("data-conversation-role")
-      ));
-      const modernRole = String(roleHeading?.getAttribute("data-conversation-role") || "").trim().toLowerCase();
-      if (modernRole) return modernRole === normalizedAuthorRole;
-      if (element.hasAttribute("data-user-message-bubble")
-          || (modernUnit === element && element.querySelector('[data-user-message-bubble]'))) {
-        return normalizedAuthorRole === "user";
-      }
-
-      const authorHints = [
-        element.getAttribute("data-message-author-role"),
-        element.querySelector('[data-message-author-role]')?.getAttribute("data-message-author-role"),
-        element.getAttribute("aria-label")
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      const authorAliases = normalizedAuthorRole === "user"
-        ? ["user", "you"]
-        : [normalizedAuthorRole];
-
-      if (!authorAliases.some((authorAlias) => authorHints.includes(authorAlias))) {
-        return false;
-      }
+      const evidence = getMessageAuthorEvidence(element);
+      if (evidence.role !== normalizedAuthorRole) return false;
 
       const extractedText = normalizeWhitespace(extractMessageText(element));
 
@@ -2271,7 +2296,69 @@
         return Boolean(extractedText) || isAssistantMessageBusy(element);
       }
 
-      return Boolean(extractedText);
+      return Boolean(extractedText) || hasUserMessageImage(element)
+        || element.hasAttribute("data-user-message-bubble") || element.hasAttribute("data-message-author-role");
+    }
+
+    function findConversationRoleMessageScope(marker) {
+      if (!(marker instanceof HTMLElement) || !isDomTrackableElement(marker)) return null;
+      const role = String(marker.getAttribute("data-conversation-role") || "").trim().toLowerCase();
+      if (!["user", "assistant"].includes(role)) return null;
+      const boundarySelector = '[data-message-id], [data-chatgpt-selection-message-id], [data-message-author-role], [data-user-message-bubble], [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids], [data-testid^="conversation-turn-"], [data-turn-id], [data-turn-key], [data-content-search-turn-key], article';
+      let scope = /^H[1-6]$/.test(marker.tagName) || marker.getAttribute("role") === "heading"
+        ? marker.parentElement : marker;
+      for (; scope instanceof HTMLElement; scope = scope.parentElement) {
+        if (["HTML", "BODY", "MAIN", "FORM"].includes(scope.tagName) || scope.hasAttribute("data-chatgpt-composer")) return null;
+        const evidence = getMessageAuthorEvidence(scope, { inherit: false });
+        // A közös user+assistant kör nem üzenet. A mély szerepfejlécet csak
+        // a saját tartalmáig vagy a legközelebbi igazolt üzenethatárig követjük.
+        if (evidence.role === role && (normalizeWhitespace(extractMessageText(scope)) || hasUserMessageImage(scope))) return scope;
+        if (scope.matches(boundarySelector)) return evidence.role === role ? scope : null;
+      }
+      return null;
+    }
+
+    function getMessageAuthorEvidence(element, options = {}) {
+      if (!(element instanceof HTMLElement) || !isDomTrackableElement(element)) return { role: "", source: "none" };
+      const collect = (scope) => {
+        const signals = [];
+        const nodes = [scope, ...Array.from(scope.querySelectorAll('[data-message-author-role], [data-conversation-role], [data-user-message-bubble]'))]
+          .filter(isDomTrackableElement);
+        for (const node of nodes) {
+          for (const [attribute, source] of [["data-message-author-role", "message_author"], ["data-conversation-role", "conversation_role"]]) {
+            const role = String(node.getAttribute(attribute) || "").trim().toLowerCase();
+            if (["user", "assistant"].includes(role)) signals.push({ role, source });
+          }
+          if (node.hasAttribute("data-user-message-bubble")) signals.push({ role: "user", source: "user_bubble" });
+        }
+        const label = String(scope.getAttribute("aria-label") || "").trim().toLowerCase();
+        if (/^(?:user|you)(?:\s+(?:said|message))?:?$/.test(label)) signals.push({ role: "user", source: "aria_role" });
+        if (/^(?:assistant|chatgpt)(?:\s+(?:said|message))?:?$/.test(label)) signals.push({ role: "assistant", source: "aria_role" });
+        const roles = new Set(signals.map((signal) => signal.role));
+        return roles.size > 1 ? { role: "", source: "role_conflict" } : signals[0] || { role: "", source: "none" };
+      };
+      let evidence = collect(element);
+      // A belső bubble nem írhatja felül a külső explicit ellenkező szerepet.
+      for (let parent = element.parentElement; parent instanceof HTMLElement; parent = parent.parentElement) {
+        const parentRole = String(parent.getAttribute("data-message-author-role") || parent.getAttribute("data-conversation-role") || "").trim().toLowerCase();
+        if (evidence.role && ["user", "assistant"].includes(parentRole) && parentRole !== evidence.role) return { role: "", source: "role_conflict" };
+      }
+      if (evidence.role || evidence.source === "role_conflict" || options.inherit === false) return evidence;
+      for (let parent = element.parentElement; parent instanceof HTMLElement; parent = parent.parentElement) {
+        if (["HTML", "BODY", "MAIN", "FORM"].includes(parent.tagName)) break;
+        evidence = collect(parent);
+        if (evidence.role || evidence.source === "role_conflict") return evidence;
+        if (parent.matches('[data-message-id], [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids], [data-turn-key], [data-content-search-turn-key], article')) break;
+      }
+      return { role: "", source: "none" };
+    }
+
+    function hasUserMessageImage(scope) {
+      if (!(scope instanceof HTMLElement)) return false;
+      return Array.from(scope.querySelectorAll("img")).some((image) => (
+        isDomTrackableElement(image) && Boolean(image.getAttribute("src") || image.getAttribute("srcset"))
+        && !image.closest('button, [role="button"], [role="menu"], [role="menuitem"], [role="heading"], h1[data-conversation-role], h2[data-conversation-role], h3[data-conversation-role], h4[data-conversation-role], h5[data-conversation-role], h6[data-conversation-role]')
+      ));
     }
 
     function extractAssistantText(element) {
@@ -2397,7 +2484,8 @@
         const tagName = node.tagName.toUpperCase();
 
         if (DOM_TEXT_SKIP_TAGS.has(tagName)
-          || (/^H[1-6]$/.test(tagName) && String(node.getAttribute("class") || "").split(/\s+/).includes("sr-only"))) {
+          || (/^H[1-6]$/.test(tagName) && (node.hasAttribute("data-conversation-role")
+            || String(node.getAttribute("class") || "").split(/\s+/).includes("sr-only")))) {
           return;
         }
 

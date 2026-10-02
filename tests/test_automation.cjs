@@ -19,6 +19,7 @@ const helperNames = [
   'extractMessageText',
   'isStableAssistantSnapshot', 'hasActiveGenerationControl',
   'captureResponseBaselineBeforeSubmit',
+  'reportAssistantSnapshotDiagnostic',
 ];
 // Csak a tesztpéldány kap hozzáférést a belső függvényekhez; az éles forrás nem exportál teszt API-t.
 const hook = helperNames.map((name) => `
@@ -73,9 +74,13 @@ class FakeElement extends FakeNode {
   matches(selector) {
     return selector.split(',').some((part) => {
       part = part.trim();
-      const attrs = [...part.matchAll(/\[([a-z0-9-]+)(?:="([^"]*)")?\]/g)];
-      if (attrs.length && attrs.map((match) => match[0]).join('') === part) {
-        return attrs.every(([, key, value]) => value === undefined ? this.hasAttribute(key) : this.getAttribute(key) === value);
+      const attrs = [...part.matchAll(/\[([a-z0-9-]+)(?:(\^?=)"([^"]*)")?\]/g)];
+      const tag = part.slice(0, part.indexOf('['));
+      if (attrs.length && `${tag}${attrs.map((match) => match[0]).join('')}` === part) {
+        return (!tag || tag.toLowerCase() === this.tagName.toLowerCase()) && attrs.every(([, key, operator, value]) => (
+          value === undefined ? this.hasAttribute(key)
+            : operator === '^=' ? String(this.getAttribute(key) || '').startsWith(value) : this.getAttribute(key) === value
+        ));
       }
       return part.toLowerCase() === this.tagName.toLowerCase();
     });
@@ -480,6 +485,11 @@ test('Válasz timeout után a késői eredmény ugyanahhoz a kéréshez érkezhe
   const progress = JSON.parse(harness.window.__gamerTranslatorProgress['late-test-followup']);
   assert.equal(progress.kind, 'assistant_response'); assert.equal(progress.text, 'Késői fordítás');
   assert.equal(harness.window.__gamerTranslatorDiagnostics['late-diagnostics'].some((entry) => entry.event === 'response_received' && entry.fields.late), true);
+  const snapshots = harness.window.__gamerTranslatorDiagnostics['late-diagnostics'].filter((entry) => entry.event === 'response_snapshot');
+  assert.equal(snapshots.some((entry) => !entry.fields.late && entry.fields.request_user_bound && entry.fields.rejection_reason === 'response_user_mismatch'), true);
+  assert.equal(snapshots.some((entry) => entry.fields.late && entry.fields.request_user_bound
+    && entry.fields.last_user_matches_request && entry.fields.response_user_matches_request
+    && entry.fields.assistant_identity_new && entry.fields.rejection_reason === 'none'), true);
   users.push(appendMessage(harness, 'user-other', 'Másik kérés'));
   assistants.push(appendMessage(harness, 'answer-other', 'Idegen válasz'));
   for (const callback of [...callbacks]) callback();
@@ -524,6 +534,62 @@ test('A diagnosztika korlátos és kizárja a szöveget, képet és URL-t', () =
   assert.equal(serialized.includes('titkos'), false); assert.equal(serialized.includes('data:image'), false); assert.equal(serialized.includes('https://'), false);
   for (let index = 0; index < 30; index += 1) harness.helpers.writeDiagnosticEntry(`call-${index}`, 'composer_ready');
   assert.equal(Object.keys(harness.window.__gamerTranslatorDiagnostics).length, 16);
+});
+
+test('Kéréskötési diagnosztika csak bool értéket és ismert ok/szerep tokent enged át', () => {
+  const harness = createHarness();
+  harness.helpers.writeDiagnosticEntry('binding-types', 'response_snapshot', {
+    request_user_bound: 'raw_request_secret', last_user_matches_request: 1,
+    response_user_matches_request: null, assistant_identity_new: {},
+    user_role_source: 'raw_user_secret', rejection_reason: 'raw_assistant_secret',
+  });
+  assert.equal(Object.keys(harness.window.__gamerTranslatorDiagnostics['binding-types'][0].fields).length, 0);
+  harness.helpers.writeDiagnosticEntry('binding-types', 'response_snapshot', {
+    request_user_bound: true, last_user_matches_request: false, response_user_matches_request: true,
+    assistant_identity_new: false, user_role_source: 'conversation_role', rejection_reason: 'response_user_mismatch',
+  });
+  const fields = harness.window.__gamerTranslatorDiagnostics['binding-types'][1].fields;
+  assert.equal(fields.request_user_bound, true); assert.equal(fields.last_user_matches_request, false);
+  assert.equal(fields.response_user_matches_request, true); assert.equal(fields.assistant_identity_new, false);
+  assert.equal(fields.user_role_source, 'conversation_role'); assert.equal(fields.rejection_reason, 'response_user_mismatch');
+  assert.equal(JSON.stringify(harness.window.__gamerTranslatorDiagnostics).includes('secret'), false);
+});
+
+test('Első és késői snapshot minden kötési elutasítás okát tartalommentesen jelzi', async () => {
+  const harness = createHarness();
+  await harness.window.__gamerTranslatorDeliver({ prompt: 'Előkészítés', autoSubmit: false, diagnosticCallId: 'binding-reasons' });
+  const previous = {
+    lastUserKey: 'message:old_secret_user', lastUserStableId: 'message:old_secret_user',
+    userKeys: ['message:old_secret_user'], assistantStableIds: ['message:old_secret_answer'],
+  };
+  const current = {
+    count: 2, userCount: 2, lastText: 'titkos fordítás', lastStableId: 'message:new_secret_answer', lastNodeId: 'new_secret_node',
+    lastUserKey: 'message:new_secret_user', lastUserStableId: 'message:new_secret_user',
+    userKeys: ['message:old_secret_user', 'message:new_secret_user'], responseUserKey: 'message:new_secret_user',
+    lastUserRoleSource: 'conversation_role', lastPending: false,
+  };
+  const variants = [
+    ['request_user_unbound', { ...current, lastUserKey: previous.lastUserKey, lastUserStableId: previous.lastUserStableId, userKeys: previous.userKeys }, false],
+    ['last_user_mismatch', { ...current, lastUserKey: 'message:other_secret_user' }, true],
+    ['response_user_mismatch', { ...current, responseUserKey: previous.lastUserKey }, true],
+    ['assistant_identity_old', { ...current, lastStableId: previous.assistantStableIds[0] }, true],
+    ['assistant_text_missing', { ...current, lastText: '' }, true],
+    ['assistant_text_transient', { ...current, lastText: 'Thinking' }, true],
+    ['assistant_pending', { ...current, generationPending: true }, true],
+    ['none', current, true],
+  ];
+  for (const [reason, snapshot, bound] of variants) {
+    for (const late of [false, true]) {
+      const baseline = { ...previous, requestUserKey: bound ? current.lastUserKey : '' };
+      harness.helpers.reportAssistantSnapshotDiagnostic(snapshot, baseline, { late });
+      const last = harness.window.__gamerTranslatorDiagnostics['binding-reasons'].at(-1);
+      assert.equal(last.event, 'response_snapshot'); assert.equal(last.fields.rejection_reason, reason);
+      assert.equal(last.fields.request_user_bound, bound); assert.equal(last.fields.late, late);
+      assert.equal(last.fields.user_role_source, 'conversation_role');
+    }
+  }
+  const serialized = JSON.stringify(harness.window.__gamerTranslatorDiagnostics);
+  assert.equal(serialized.includes('secret'), false); assert.equal(serialized.includes('titkos'), false);
 });
 
 
@@ -687,7 +753,32 @@ function modernDomHarness() {
     installQueries(harness.document);
     return { bubble, assistantBody };
   };
-  return { harness, addTurn };
+  const addRoleImageTurn = (index, text, { searchMetadata = false, boundary = 'div' } = {}) => {
+    const turn = harness.document.body.appendChild(new FakeElement('div'));
+    const userUnit = turn.appendChild(new FakeElement(boundary));
+    userUnit.setAttribute('data-message-id', `role-image-user-${index}`);
+    if (searchMetadata) {
+      userUnit.setAttribute('data-chatgpt-search-unit-key', `role-image-unit-${index}`);
+      userUnit.setAttribute('data-chatgpt-search-message-ids', `["role-image-user-${index}"]`);
+    }
+    const userHeading = userUnit.appendChild(new FakeElement('h4'));
+    userHeading.setAttribute('data-conversation-role', 'user'); userHeading.setAttribute('class', 'sr-only');
+    userHeading.appendChild(new FakeText('You said:'));
+    const image = userUnit.appendChild(new FakeImage('img'));
+    image.setAttribute('src', 'data:image/png;base64,aGVsbG8=');
+    const assistantUnit = turn.appendChild(new FakeElement('div'));
+    assistantUnit.setAttribute('data-chatgpt-search-unit-key', `role-image-answer-unit-${index}`);
+    assistantUnit.setAttribute('data-chatgpt-search-message-ids', `["role-image-answer-${index}"]`);
+    const heading = assistantUnit.appendChild(new FakeElement('h4'));
+    heading.setAttribute('data-conversation-role', 'assistant'); heading.setAttribute('class', 'sr-only');
+    const assistantBody = assistantUnit.appendChild(new FakeElement('div'));
+    assistantBody.setAttribute('data-chatgpt-selection-message-id', `role-image-answer-${index}`);
+    const markdown = assistantBody.appendChild(new FakeElement('div'));
+    markdown.setAttribute('data-markdown-text-style', ''); markdown.appendChild(new FakeText(text));
+    installQueries(harness.document);
+    return { turn, userUnit, userHeading, image, assistantBody };
+  };
+  return { harness, addTurn, addRoleImageTurn, refreshQueries: () => installQueries(harness.document) };
 }
 
 test('Az új, article nélküli ChatGPT DOM szerepei és üzenetazonosítói felismerhetők', () => {
@@ -711,6 +802,86 @@ test('Az új ChatGPT user bubble szöveg nélküli képkérésként is külön �
   bubble.replaceChildren(new FakeImage('img'));
   const snapshot = harness.helpers.captureAssistantSnapshot();
   assert.equal(snapshot.userCount, 1); assert.equal(snapshot.lastUserStableId, 'messages:["user-1"]');
+});
+
+test('Szerepfejléces kép-only user kör keresőattribútumok és bubble nélkül is az új válaszhoz köthető', () => {
+  for (const boundary of ['div', 'article']) {
+    const { harness, addTurn, addRoleImageTurn } = modernDomHarness();
+    addTurn(1, 'Korábbi fordítás');
+    const previous = harness.helpers.captureAssistantSnapshot();
+    addRoleImageTurn(2, 'A képkérés kész fordítása.', { boundary });
+    const current = harness.helpers.captureAssistantSnapshot();
+    assert.equal(current.userCount, 2, boundary);
+    assert.equal(current.lastUserStableId, 'message:role-image-user-2', boundary);
+    assert.equal(current.responseUserKey, current.lastUserKey, boundary);
+    assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), true, boundary);
+  }
+});
+
+test('Megmaradt régi stabil user horgony új DOM-node mellett az azonosító nélküli új képkérést is köti', () => {
+  const { harness, addTurn, addRoleImageTurn, refreshQueries } = modernDomHarness();
+  const { bubble } = addTurn(1, 'Korábbi fordítás');
+  const previous = harness.helpers.captureAssistantSnapshot();
+  const oldUnit = bubble.parentElement;
+  const redrawnOldBubble = new FakeElement('div'); redrawnOldBubble.setAttribute('data-user-message-bubble', '');
+  redrawnOldBubble.appendChild(new FakeText('Mesterséges kérés')); oldUnit.replaceChildren(redrawnOldBubble);
+  const { userUnit } = addRoleImageTurn(2, 'Az új képkérés fordítása.');
+  userUnit.attributes.delete('data-message-id'); userUnit.setAttribute('data-turn-key', 'own-image-turn-2');
+  refreshQueries();
+  const current = harness.helpers.captureAssistantSnapshot();
+  assert.equal(current.userCount, 2); assert.equal(current.userKeys[0], previous.lastUserKey);
+  assert.notEqual(current.userNodeIds[0], previous.lastUserNodeId);
+  assert.equal(current.lastUserStableId, ''); assert.equal(current.lastUserKey.startsWith('dom:'), true);
+  assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), true);
+});
+
+test('Eltűnt régi stabil user horgony új DOM-key másolata nem bizonyít új képkérést', () => {
+  const { harness, addRoleImageTurn, refreshQueries } = modernDomHarness();
+  const { userUnit } = addRoleImageTurn(1, 'Korábbi fordítás');
+  const previous = harness.helpers.captureAssistantSnapshot();
+  const replacement = new FakeElement('div'); replacement.setAttribute('data-turn-key', 'redrawn-old-turn');
+  const heading = replacement.appendChild(new FakeElement('h4')); heading.setAttribute('data-conversation-role', 'user');
+  heading.setAttribute('class', 'sr-only');
+  const image = replacement.appendChild(new FakeImage('img')); image.setAttribute('src', 'data:image/png;base64,aGVsbG8=');
+  userUnit.parentElement.replaceChildren(replacement);
+  const answer = harness.document.body.appendChild(new FakeElement('div'));
+  answer.setAttribute('data-message-author-role', 'assistant'); answer.setAttribute('data-message-id', 'redrawn-old-answer');
+  answer.appendChild(new FakeText('Korábbi fordítás'));
+  refreshQueries();
+  const current = harness.helpers.captureAssistantSnapshot();
+  assert.equal(current.userCount, 1); assert.equal(current.lastUserStableId, '');
+  assert.equal(current.userKeys.includes(previous.lastUserKey), false);
+  assert.equal(current.lastUserKey.startsWith('dom:'), true);
+  assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), false);
+});
+
+test('Kép vagy névrészlet explicit user szerep nélkül nem lehet felhasználói kör', () => {
+  const { harness, refreshQueries } = modernDomHarness();
+  for (const label of ['', 'Young user avatar', 'User settings']) {
+    const wrapper = harness.document.body.appendChild(new FakeElement('article'));
+    if (label) wrapper.setAttribute('aria-label', label);
+    const image = wrapper.appendChild(new FakeImage('img'));
+    image.setAttribute('src', 'data:image/png;base64,aGVsbG8=');
+  }
+  refreshQueries();
+  assert.equal(harness.helpers.findUserMessageNodes().length, 0);
+});
+
+test('Rejtett szerepjel vagy kép és vegyes szerepű wrapper nem igazolhat kép-only user kört', () => {
+  for (const invalidKind of ['hidden-heading', 'hidden-image', 'hidden-wrapper', 'mixed-heading', 'mixed-bubble']) {
+    const { harness, addRoleImageTurn, refreshQueries } = modernDomHarness();
+    const { userUnit, userHeading, image } = addRoleImageTurn(1, 'A különálló asszisztensválasz.');
+    if (invalidKind === 'hidden-heading') userHeading.setAttribute('hidden', '');
+    else if (invalidKind === 'hidden-image') image.setAttribute('hidden', '');
+    else if (invalidKind === 'hidden-wrapper') userUnit.setAttribute('hidden', '');
+    else {
+      const opposite = userUnit.appendChild(new FakeElement('h4'));
+      opposite.setAttribute('data-conversation-role', 'assistant');
+      if (invalidKind === 'mixed-bubble') userUnit.setAttribute('data-user-message-bubble', '');
+    }
+    refreshQueries();
+    assert.equal(harness.helpers.findUserMessageNodes().length, 0, invalidKind);
+  }
 });
 
 
