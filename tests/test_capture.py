@@ -181,9 +181,12 @@ class CapturePermissionTests(unittest.TestCase):
         for index in range(3):
             self.window._arm_screen_clip_hotkey()
             payloads.append(self.receive_image(str(index)))
-        for _ in range(3):
-            self.window._poll_clipboard()
+        with patch.object(module, "log_event") as log:
+            for _ in range(3):
+                self.window._poll_clipboard()
         self.assertEqual([call.args[0] for call in self.window._process_clipboard_translation.call_args_list], payloads)
+        self.assertEqual([call.kwargs["pending_count"] for call in log.call_args_list
+                          if call.args[0] == "capture.dequeued"], [2, 1, 0])
 
     def test_full_queue_keeps_accepted_images_and_reports_rejection(self):
         payloads = []

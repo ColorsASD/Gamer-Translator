@@ -92,6 +92,39 @@ def role_only_image_fixture(*, history=True):
     return source
 
 
+def clickable_role_image_fixture(*, button_kind="button"):
+    viewer = "const imageViewer=document.createElement('button'); imageViewer.type='button';" if button_kind in ("button", "dialog-button") else "const imageViewer=document.createElement('div'); imageViewer.setAttribute('role','button');"
+    if button_kind.startswith("dialog-"):
+        viewer += " imageViewer.setAttribute('aria-haspopup','dialog');"
+    return role_only_image_fixture().replace(
+        "userContent.append(userImage);",
+        viewer + " imageViewer.append(userImage); userContent.append(imageViewer);",
+    )
+
+
+LIVE_HEADING_IMAGE_USER = """const userUnit=document.createElement('div');
+  const userHeading=document.createElement('h4'); userHeading.className='sr-only'; userHeading.textContent='You said:';
+  const userContent=document.createElement('div');
+  userContent.dataset.chatgptSearchUnitKey='live-user-'+count;
+  userContent.dataset.chatgptSearchMessageIds='live-u-'+count;
+  const imageWrapper=document.createElement('div');
+  const imageViewer=document.createElement('div'); imageViewer.setAttribute('role','button');
+  imageViewer.setAttribute('aria-label','Enlarge image');
+  const userImage=document.createElement('img'); userImage.setAttribute('data-state','loaded');
+  userImage.src=URL.createObjectURL(attachment.files[0]);
+  imageViewer.append(userImage); imageWrapper.append(imageViewer); userContent.append(imageWrapper);
+  userUnit.append(userHeading,userContent); turn.append(userUnit);"""
+
+
+def live_heading_image_fixture(*, history=True):
+    """Az igazolt élő szerkezet: saját UI-fejléc, külön belső üzenetazonosító."""
+    return (role_only_image_fixture(history=history)
+            .replace(ROLE_ONLY_USER, LIVE_HEADING_IMAGE_USER)
+            .replace("historyUserHeading.dataset.conversationRole='user';", "")
+            .replace("historyUserBody.textContent=", "historyUserBody.dataset.userMessageBubble=''; historyUserBody.textContent=")
+            .replace("</head>", "<style>.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}</style></head>"))
+
+
 class ModernWebEngineTests(unittest.TestCase):
     setUpClass = classmethod(baseline.WebEngineStagingTests.setUpClass.__func__)
     setUp = baseline.WebEngineStagingTests.setUp
@@ -218,6 +251,109 @@ class ModernWebEngineTests(unittest.TestCase):
         self.assertEqual(self.page.errors, [])
         self.assertEqual(self.blocker.blocked, [])
 
+    def test_live_text_heading_image_requests_have_stable_identity_and_second_response(self):
+        self.load_fixture(live_heading_image_fixture())
+        self.expose_message_snapshots()
+        user_keys = []
+        for expected_count in (2, 3):
+            self.raw_javascript("document.body.dataset.finished='false'")
+            result = self.deliver_role_only_image()
+            self.assertEqual(result["assistantResponseText"], "Azonos kész fordítás.")
+            self.assertTrue(result["assistantResponseComplete"])
+            self.assertEqual(self.raw_javascript("document.body.dataset.finished"), "true")
+            snapshot = self.message_snapshot()
+            self.assertEqual((snapshot["userCount"], snapshot["count"]), (expected_count, expected_count))
+            self.assertEqual(snapshot["lastUserKey"], snapshot["responseUserKey"])
+            self.assertEqual(snapshot["lastUserStableId"], "messages:live-u-" + str(expected_count - 1))
+            self.assertEqual(snapshot["lastUserRoleSource"], "heading_role")
+            self.assertTrue(self.response_details()["fresh"])
+            user_keys.append(snapshot["lastUserKey"])
+        self.assertNotEqual(*user_keys)
+        self.assertEqual(self.raw_javascript("document.body.dataset.submitCount"), "2")
+        self.assertEqual(self.raw_javascript("document.querySelectorAll('[data-conversation-role=\"user\"],[data-message-author-role=\"user\"]').length"), 0)
+        self.assertEqual(self.page.errors, [])
+        self.assertEqual(self.blocker.blocked, [])
+
+    def test_live_text_heading_uses_own_identity_under_shared_outer_message_id(self):
+        source = live_heading_image_fixture().replace(
+            LIVE_HEADING_IMAGE_USER,
+            "turn.dataset.messageId='mixed-user-assistant-'+count;" + LIVE_HEADING_IMAGE_USER,
+        )
+        self.load_fixture(source)
+        self.expose_message_snapshots()
+        result = self.deliver_role_only_image()
+        self.assertEqual(result["assistantResponseText"], "Azonos kész fordítás.")
+        snapshot = self.message_snapshot()
+        self.assertEqual((snapshot["userCount"], snapshot["count"]), (2, 2))
+        self.assertEqual(snapshot["lastUserStableId"], "messages:live-u-1")
+        self.assertEqual(snapshot["lastStableId"], "message:a-1")
+        self.assertNotEqual(snapshot["lastUserStableId"], snapshot["lastStableId"])
+        self.assertTrue(self.response_details()["fresh"])
+        self.assertEqual(self.page.errors, [])
+        self.assertEqual(self.blocker.blocked, [])
+
+    def test_live_text_heading_invalid_markers_do_not_bind_new_assistant(self):
+        variants = {
+            "non-heading": LIVE_HEADING_IMAGE_USER.replace("createElement('h4')", "createElement('div')"),
+            "not-sr-only": LIVE_HEADING_IMAGE_USER.replace("userHeading.className='sr-only';", ""),
+            "partial-label": LIVE_HEADING_IMAGE_USER.replace("userHeading.textContent='You said:';", "userHeading.textContent='User settings: You said:';"),
+            "no-own-boundary": LIVE_HEADING_IMAGE_USER.replace("userContent.dataset.chatgptSearchUnitKey='live-user-'+count;", "").replace("userContent.dataset.chatgptSearchMessageIds='live-u-'+count;", ""),
+            "empty-identity": LIVE_HEADING_IMAGE_USER.replace("userContent.dataset.chatgptSearchMessageIds='live-u-'+count;", "userContent.dataset.chatgptSearchMessageIds='';"),
+            "search-content": LIVE_HEADING_IMAGE_USER.replace("userUnit.append(userHeading,userContent);", "userContent.append(userHeading); userUnit.append(userContent);"),
+            "assistant-wrapper": LIVE_HEADING_IMAGE_USER.replace("userUnit.append(userHeading,userContent);", "userUnit.dataset.messageAuthorRole='assistant'; userUnit.append(userHeading,userContent);"),
+            "mixed-role": LIVE_HEADING_IMAGE_USER.replace("userUnit.append(userHeading,userContent);", "const opposite=document.createElement('h4'); opposite.dataset.conversationRole='assistant'; userUnit.append(userHeading,userContent,opposite);"),
+            "hidden-heading": LIVE_HEADING_IMAGE_USER.replace("userHeading.textContent='You said:';", "userHeading.textContent='You said:'; userHeading.hidden=true;"),
+            "aria-hidden-heading": LIVE_HEADING_IMAGE_USER.replace("userHeading.textContent='You said:';", "userHeading.textContent='You said:'; userHeading.setAttribute('aria-hidden','true');"),
+            "hidden-image": LIVE_HEADING_IMAGE_USER.replace("imageViewer.append(userImage);", "userImage.hidden=true; imageViewer.append(userImage);"),
+            "hidden-parent": LIVE_HEADING_IMAGE_USER.replace("userUnit.append(userHeading,userContent);", "userUnit.style.display='none'; userUnit.append(userHeading,userContent);"),
+            "avatar": LIVE_HEADING_IMAGE_USER.replace("imageWrapper.append(imageViewer);", "imageWrapper.dataset.slot='avatar'; imageWrapper.append(imageViewer);"),
+            "menu": LIVE_HEADING_IMAGE_USER.replace("imageWrapper.append(imageViewer);", "imageWrapper.setAttribute('role','menu'); imageWrapper.append(imageViewer);"),
+            "toolbar": LIVE_HEADING_IMAGE_USER.replace("imageWrapper.append(imageViewer);", "imageWrapper.setAttribute('role','toolbar'); imageWrapper.append(imageViewer);"),
+        }
+        for kind in ("blockquote", "code", "markdown"):
+            wrapper = "const quote=document.createElement('" + (kind if kind != "markdown" else "div") + "');"
+            if kind == "markdown":
+                wrapper += "quote.dataset.markdownTextStyle='';"
+            variants[kind] = LIVE_HEADING_IMAGE_USER.replace(
+                "userUnit.append(userHeading,userContent);",
+                wrapper + "quote.append(userHeading); userUnit.append(quote,userContent);",
+            )
+        for name, invalid_user in variants.items():
+            with self.subTest(variant=name):
+                self.load_fixture(live_heading_image_fixture().replace(LIVE_HEADING_IMAGE_USER, invalid_user))
+                self.expose_message_snapshots()
+                with self.assertRaisesRegex(RuntimeError, "válasza nem érkezett meg időben"):
+                    self.deliver_role_only_image(responseTimeoutMs=1000)
+                self.wait_for_fixture_completion()
+                snapshot = self.message_snapshot()
+                self.assertEqual(snapshot["userCount"], 1)
+                self.assertEqual(snapshot["lastText"], "Azonos kész fordítás.")
+                self.assertFalse(self.response_details()["fresh"])
+                self.assertFalse(self.response_details()["request_user_bound"])
+                self.assertEqual(self.page.errors, [])
+                self.assertEqual(self.blocker.blocked, [])
+
+    def test_live_text_heading_user_rejects_redrawn_old_assistant(self):
+        source = live_heading_image_fixture().replace(
+            "unit.append(heading,answer); turn.append(unit); document.querySelector('main').append(turn);",
+            """unit.append(heading,answer); document.querySelector('main').append(turn);
+              const previousAssistant=document.querySelector('[data-chatgpt-search-unit-key="history-assistant"]');
+              turn.append(previousAssistant);""",
+        )
+        self.load_fixture(source)
+        self.expose_message_snapshots()
+        with self.assertRaisesRegex(RuntimeError, "válasza nem érkezett meg időben"):
+            self.deliver_role_only_image(responseTimeoutMs=1000)
+        self.wait_for_fixture_completion()
+        snapshot = self.message_snapshot()
+        self.assertEqual((snapshot["userCount"], snapshot["count"]), (2, 1))
+        self.assertEqual(snapshot["lastUserRoleSource"], "heading_role")
+        self.assertEqual(snapshot["lastText"], "Korábbi kész válasz.")
+        self.assertFalse(self.response_details()["fresh"])
+        self.assertTrue(self.response_details()["request_user_bound"])
+        self.assertEqual(self.page.errors, [])
+        self.assertEqual(self.blocker.blocked, [])
+
     def test_role_heading_image_requests_accept_identical_successive_answers(self):
         self.load_fixture(role_only_image_fixture())
         self.expose_message_snapshots()
@@ -234,6 +370,80 @@ class ModernWebEngineTests(unittest.TestCase):
             user_keys.append(snapshot["lastUserKey"])
         self.assertNotEqual(*user_keys)
         self.assertEqual(self.raw_javascript("document.body.dataset.submitCount"), "2")
+        self.assertEqual(self.page.errors, [])
+        self.assertEqual(self.blocker.blocked, [])
+
+    def test_clickable_role_heading_images_accept_second_and_identical_next_response(self):
+        for button_kind in ("button", "role-button", "dialog-button", "dialog-role-button"):
+            with self.subTest(button_kind=button_kind):
+                self.load_fixture(clickable_role_image_fixture(button_kind=button_kind))
+                self.expose_message_snapshots()
+                user_keys = []
+                for expected_count in (2, 3):
+                    self.raw_javascript("document.body.dataset.finished='false'")
+                    result = self.deliver_role_only_image()
+                    self.assertEqual(result["assistantResponseText"], "Azonos kész fordítás.")
+                    self.assertTrue(result["assistantResponseComplete"])
+                    snapshot = self.message_snapshot()
+                    self.assertEqual((snapshot["userCount"], snapshot["count"]), (expected_count, expected_count))
+                    self.assertEqual(snapshot["lastUserKey"], snapshot["responseUserKey"])
+                    user_keys.append(snapshot["lastUserKey"])
+                self.assertNotEqual(*user_keys)
+                self.assertEqual(self.raw_javascript("document.body.dataset.submitCount"), "2")
+                self.assertEqual(self.page.errors, [])
+                self.assertEqual(self.blocker.blocked, [])
+
+    def test_user_role_avatar_menu_and_toolbar_images_do_not_bind_another_response(self):
+        invalid_images = """for(const controlKind of ['avatar','menu','toolbar']) {
+          const control=document.createElement('div');
+          if(controlKind==='avatar') control.dataset.slot='avatar';
+          else control.setAttribute('role',controlKind);
+          const button=document.createElement('button'); button.type='button';
+          const image=userImage.cloneNode(); button.append(image); control.append(button); userContent.append(control);
+        }"""
+        source = role_only_image_fixture().replace("userContent.append(userImage);", invalid_images)
+        self.load_fixture(source)
+        self.expose_message_snapshots()
+        with self.assertRaisesRegex(RuntimeError, "válasza nem érkezett meg időben"):
+            self.deliver_role_only_image(responseTimeoutMs=1000)
+        self.wait_for_fixture_completion()
+        snapshot = self.message_snapshot()
+        self.assertEqual((snapshot["userCount"], snapshot["count"]), (1, 2))
+        self.assertFalse(self.response_details()["fresh"])
+        self.assertEqual(self.page.errors, [])
+        self.assertEqual(self.blocker.blocked, [])
+
+    def test_native_cancellation_releases_pending_delivery_in_chromium(self):
+        self.load_fixture(clickable_role_image_fixture().replace("},600);", "},30000);"))
+        self.harness._ensure_automation_ready()
+        payload = dict(prompt="", imageDataUrl=IMAGE, imageMimeType="image/png", imageFilename="szintetikus.png",
+                       autoSubmit=True, waitForResponse=True, copyResponseToClipboard=False,
+                       pageReadyTimeoutMs=1000, responseTimeoutMs=600000,
+                       deliveryCallId="chromium-cancel", diagnosticCallId="chromium-cancel")
+        self.raw_javascript(
+            "window.__offlineCancellationResult=null;"
+            "window.__gamerTranslatorDeliver(" + json.dumps(payload) + ").then(result=>{window.__offlineCancellationResult=JSON.stringify(result);});"
+            "window.__offlineCancelTimer=window.setInterval(()=>{"
+            "if((window.__gamerTranslatorDiagnostics?.['chromium-cancel']||[]).some(entry=>entry.event==='response_wait_started')) {"
+            "window.clearInterval(window.__offlineCancelTimer); window.__gamerTranslatorCancelDelivery('chromium-cancel');}},20);",
+            world=QWebEngineScript.ScriptWorldId.ApplicationWorld,
+        )
+        deadline = time.monotonic() + 5.0
+        while True:
+            serialized = self.raw_javascript("window.__offlineCancellationResult", world=QWebEngineScript.ScriptWorldId.ApplicationWorld)
+            if serialized:
+                break
+            if time.monotonic() >= deadline:
+                self.fail("A megszakított Chromium-küldés nem zárult le időben.")
+            self.harness._wait_with_events(20)
+        result = json.loads(serialized)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["cancelled"])
+        self.assertEqual(self.raw_javascript("window.__gamerTranslatorComposerAutoRecovery.suspendedCount", world=QWebEngineScript.ScriptWorldId.ApplicationWorld), 0)
+        self.assertEqual(self.raw_javascript("document.body.dataset.submitCount"), "1")
+        self.assertEqual(self.raw_javascript("Object.keys(window.__gamerTranslatorAssistantResponseFollowUps||{}).length", world=QWebEngineScript.ScriptWorldId.ApplicationWorld), 0)
+        next_result = self.deliver(prompt="Következő saját kérés", autoSubmit=False, copyResponseToClipboard=False, deliveryCallId="chromium-next")
+        self.assertTrue(next_result["ok"])
         self.assertEqual(self.page.errors, [])
         self.assertEqual(self.blocker.blocked, [])
 

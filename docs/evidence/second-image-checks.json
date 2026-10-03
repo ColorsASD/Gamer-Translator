@@ -1,0 +1,98 @@
+{
+  "checkedAt": "2026-10-03T11:41:04.219195+00:00",
+  "appVersion": "5.15",
+  "baseCommit": "5551bfda20c243c65b2c937d01336c99ba97e4ae",
+  "incident": {
+    "date": "2026-10-03",
+    "appVersion": "5.14",
+    "imagesObserved": 5,
+    "imagesAccepted": 5,
+    "imagesDequeued": 5,
+    "secondImageQueueWaitSeconds": 163.883,
+    "secondAttachmentConfirmed": true,
+    "secondSubmissionConfirmed": true,
+    "requestRejectionReason": "request_user_unbound",
+    "javascriptCallbackTimeoutMs": 5000,
+    "subsequentEarlyDeliveryFailures": 3
+  },
+  "v514ClickableImageReproduction": {
+    "userCountBefore": 1,
+    "userCountAfter": 1,
+    "assistantCountAfter": 2,
+    "fresh": false
+  },
+  "pythonTests": {
+    "passed": 317,
+    "failed": 0,
+    "skipped": 0,
+    "elapsedSeconds": 47.037
+  },
+  "javascriptTests": {
+    "passed": 51,
+    "failed": 0,
+    "skipped": 0
+  },
+  "modernQtTests": {
+    "passed": 13,
+    "failed": 0,
+    "skipped": 0,
+    "elapsedSeconds": 27.591,
+    "includedInPythonSuite": true,
+    "finalAutomationRetested": true
+  },
+  "deliveryPollingTests": {
+    "passed": 11,
+    "includedInPythonSuite": true,
+    "actualChromiumDelayedCallbackTest": true,
+    "callbackDelayMs": 100,
+    "callbackLimitMs": 20,
+    "imageSubmissionCount": 1
+  },
+  "sourceSelfTest": {
+    "passed": 9,
+    "allChecksTrue": true,
+    "quickChatCycles": 3,
+    "clickableImageRequests": 2,
+    "elapsedSeconds": 5.929,
+    "ocrTested": false
+  },
+  "build": {
+    "bytes": 381566888,
+    "sha256": "2abb9aeeffc18897efc4b9e2843f0c81278403e034277a718719bb3a2855cfd8",
+    "checksPassed": 34,
+    "allChecksTrue": true,
+    "sourceSha256": {
+      "main.py": "5e7341f37ed30776cbae027c967d1b3fbb11ae177aceb3c2ce17d19a309251e9",
+      "gamer_translator/defaults.py": "3b4e8bfa21ea14302802bd9384f44bac923ffaf0b384c0e39307521d4bb3f406",
+      "gamer_translator/diagnostics.py": "5dc4d76ba638c377f006e8866a236f36d04944499de062efd6ab78d5170da4e2",
+      "gamer_translator/hotkeys.py": "0cc11e1ff7470ce8ff9361a01a94f54877a5b2a5ff824852ea6e83c73a5bfa19",
+      "gamer_translator/main_window.py": "a681f3c566f5768890a01942d234fa24c68f8a1bd76cc082d27c0f7f07471508",
+      "gamer_translator/ocr_service.py": "0a4370c908d2e4bc7e01dde93a1930c3773c70929066c648d28e057e9e53b3e9",
+      "gamer_translator/self_test.py": "16e26e0c63d11bc933550f043abe44fbdb2da61fd0c9b8d3f3fa0a39dc3612e5",
+      "gamer_translator/settings_store.py": "a76805fd0a4d92ed9020b6cc1751e65ec7ff809d01d46b4a95f1cc1a726357fd"
+    }
+  },
+  "frozenSelfTest": {
+    "passed": 10,
+    "allChecksTrue": true,
+    "quickChatCycles": 55,
+    "clickableImageRequests": 2,
+    "elapsedSeconds": 64.669,
+    "rapidOCR": "Hello gamer",
+    "windowsOCR": "Hello gamer",
+    "networkRequests": 0,
+    "nativeHotkeys": 0
+  },
+  "localInstallation": {
+    "binaryMatchesVerified": true,
+    "normalStartupValidated": true,
+    "browserLoaded": true,
+    "automationInjected": true,
+    "startupErrors": 0
+  },
+  "limits": {
+    "authenticatedNewChatGPTRequestTested": false,
+    "gameplayTested": false,
+    "exactLiveDOMVariantConfirmed": false
+  }
+}

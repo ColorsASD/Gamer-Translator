@@ -1,0 +1,148 @@
+{
+  "checkedAt": "2026-10-03T12:22:49.558684+00:00",
+  "appVersion": "5.16",
+  "automationVersion": "2026-10-03-2",
+  "baseCommit": "5551bfda20c243c65b2c937d01336c99ba97e4ae",
+  "incident": {
+    "date": "2026-10-03",
+    "appVersion": "5.15",
+    "firstAttachmentConfirmed": true,
+    "firstSubmissionConfirmed": true,
+    "firstAssistantComplete": true,
+    "firstUserCount": 1,
+    "subsequentImagesQueued": 2,
+    "rejectionReason": "request_user_unbound"
+  },
+  "liveExistingDOMReadOnly": {
+    "conversationPath": true,
+    "imageCount": 2,
+    "versions": {
+      "5.15": {
+        "assistantCount": 3,
+        "userCount": 1,
+        "lastUserHasStableIdentity": true,
+        "lastUserRoleSource": "user_bubble",
+        "lastAssistantHasStableIdentity": true,
+        "lastAssistantTextLength": 177,
+        "lastResponseBoundToLastUser": true,
+        "assistantPending": false,
+        "generationPending": false,
+        "automationSha256": "9567c36ff528641d812f75c0a84bebd16b4ef2e5f6bf561611dea031c314e05c"
+      },
+      "5.16": {
+        "assistantCount": 3,
+        "userCount": 3,
+        "lastUserHasStableIdentity": true,
+        "lastUserRoleSource": "heading_role",
+        "lastAssistantHasStableIdentity": true,
+        "lastAssistantTextLength": 177,
+        "lastResponseBoundToLastUser": true,
+        "assistantPending": false,
+        "generationPending": false,
+        "automationSha256": "9a9ba7e3f9e236a7426b1f0ad3381d027aff40f45a84b96dced4cf9431b80edd"
+      }
+    }
+  },
+  "v515OriginalAssetReproduction": {
+    "appVersion": "5.15",
+    "consoleErrors": 0,
+    "details": {
+      "assistant_count": 2,
+      "fixture_finished": true,
+      "fresh": false,
+      "generation_pending": false,
+      "last_user_matches_request": false,
+      "pending": false,
+      "request_user_bound": false,
+      "response_user_matches_request": false,
+      "stable": true,
+      "stop_elapsed_ms": 1143,
+      "submit_elapsed_ms": 1165,
+      "text_length": 21,
+      "user_count": 1,
+      "user_role_source": "user_bubble"
+    },
+    "expectedTimeout": true,
+    "fixture": "live_text_heading_image",
+    "harnessVersionLabelShimOnly": true,
+    "networkRequests": 0,
+    "originalAssetSha256": "9567c36ff528641d812f75c0a84bebd16b4ef2e5f6bf561611dea031c314e05c"
+  },
+  "pythonTests": {
+    "passed": 321,
+    "failed": 0,
+    "skipped": 0,
+    "elapsedSeconds": 86.841
+  },
+  "javascriptTests": {
+    "passed": 55,
+    "failed": 0,
+    "skipped": 0
+  },
+  "modernQtTests": {
+    "passed": 17,
+    "failed": 0,
+    "skipped": 0,
+    "negativeHeadingVariants": 18,
+    "includedInPythonSuite": true
+  },
+  "diagnosticsTests": {
+    "passed": 25,
+    "includedInPythonSuite": true,
+    "headingRoleWriterReaderFormattingValidated": true
+  },
+  "deliveryPollingTests": {
+    "passed": 11,
+    "includedInPythonSuite": true
+  },
+  "sourceSelfTest": {
+    "includedInPythonSuite": true,
+    "passed": 11,
+    "modernImageRequests": 3,
+    "modernTextRequests": 1
+  },
+  "build": {
+    "bytes": 381569817,
+    "sha256": "e603c8c1fab98651a086344beaf8f80d1fae04a2bef199275890411b37e7b84e",
+    "checksPassed": 34,
+    "allChecksTrue": true,
+    "sourceSha256": {
+      "main.py": "5e7341f37ed30776cbae027c967d1b3fbb11ae177aceb3c2ce17d19a309251e9",
+      "gamer_translator/defaults.py": "83d00fae7a271d8d5ead1b99c7fc9f0c93d159a4d16e50ed990e16fac08d9b3a",
+      "gamer_translator/diagnostics.py": "fd54840e6e76e18e86ed7f5f837e9eb2efd76a561b0ff07ae1f832b0f0efd7be",
+      "gamer_translator/hotkeys.py": "0cc11e1ff7470ce8ff9361a01a94f54877a5b2a5ff824852ea6e83c73a5bfa19",
+      "gamer_translator/main_window.py": "4f7ce187e6860b68e854603a5ca1c34589f00329f7e900d0d3d7958d7c8a3eb3",
+      "gamer_translator/ocr_service.py": "0a4370c908d2e4bc7e01dde93a1930c3773c70929066c648d28e057e9e53b3e9",
+      "gamer_translator/self_test.py": "8e53c00ad82481e8e90af79347e9c6acca9a05ffe70945aeb3167d329d46ce0c",
+      "gamer_translator/settings_store.py": "a76805fd0a4d92ed9020b6cc1751e65ec7ff809d01d46b4a95f1cc1a726357fd"
+    },
+    "automationSha256": "9a9ba7e3f9e236a7426b1f0ad3381d027aff40f45a84b96dced4cf9431b80edd"
+  },
+  "frozenSelfTest": {
+    "passed": 12,
+    "allChecksTrue": true,
+    "quickChatCycles": 55,
+    "modernImageRequests": 3,
+    "modernTextRequests": 1,
+    "elapsedSeconds": 65.344,
+    "ocr": {
+      "expected": "Hello gamer",
+      "rapidocr": "Hello gamer",
+      "windows": "Hello gamer"
+    },
+    "networkRequests": 0,
+    "nativeHotkeys": 0
+  },
+  "localInstallation": {
+    "binaryMatchesVerified": true,
+    "normalStartupValidated": true,
+    "browserLoaded": true,
+    "automationInjected": true,
+    "startupErrors": 0
+  },
+  "limits": {
+    "exactLiveDOMVariantConfirmed": true,
+    "authenticatedNewChatGPTRequestTested": false,
+    "gameplayTested": false
+  }
+}

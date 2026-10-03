@@ -127,6 +127,8 @@ class DiagnosticsTests(unittest.TestCase):
         fields = {
             "assistant_count": 2,
             "user_count": 1,
+            "user_role_candidates": 2,
+            "clickable_image_candidates": 1,
             "text_length": 29,
             "elapsed_ms": 6000.5,
             "pending": False,
@@ -136,7 +138,7 @@ class DiagnosticsTests(unittest.TestCase):
             "last_user_matches_request": True,
             "response_user_matches_request": False,
             "assistant_identity_new": True,
-            "user_role_source": "conversation_role",
+            "user_role_source": "heading_role",
             "rejection_reason": "response_user_mismatch",
         }
         private_fields = {
@@ -190,7 +192,7 @@ class DiagnosticsTests(unittest.TestCase):
                     self.assertEqual(module._metadata({key: value}), {})
         expected_values = {
             "user_role_source": (
-                "none", "message_author", "user_bubble", "conversation_role", "aria_role", "role_conflict",
+                "none", "message_author", "user_bubble", "conversation_role", "aria_role", "heading_role", "role_conflict",
             ),
             "rejection_reason": (
                 "none", "request_user_unbound", "last_user_mismatch", "response_user_mismatch",
@@ -201,8 +203,8 @@ class DiagnosticsTests(unittest.TestCase):
             for value in values:
                 with self.subTest(field=key, value=value):
                     self.assertEqual(module._metadata({key: value}), {key: value})
-        for key in ("assistant_count", "user_count", "text_length"):
-            for value in (True, "2", None, [], {}):
+        for key in ("assistant_count", "user_count", "text_length", "user_role_candidates", "clickable_image_candidates"):
+            for value in (True, "2", None, [], {}, math.inf, math.nan):
                 with self.subTest(field=key, value=value):
                     self.assertEqual(module._metadata({key: value}), {})
 

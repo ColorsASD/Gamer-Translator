@@ -133,6 +133,34 @@ print(json.dumps(state))
         self.assertFalse(state["fallback"], "Az ablak bezárult, de a Qt eseményhurok tovább futott.")
         self.assertTrue(state["temporary_removed"])
 
+    def test_offline_self_test_binds_three_unmarked_heading_images_then_text(self):
+        # A külön folyamat a teljes MainWindow-képküldést járja be, saját
+        # memóriavágólappal, három egymást követő azonos szövegű képes
+        # válasszal, majd azonos válaszú gyors chat szöveggel.
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "self-test.json"
+            result = subprocess.run(
+                [sys.executable, "-X", "utf8", "main.py", "--self-test-report", str(report_path),
+                 "--self-test-duration", "1"],
+                cwd=Path(__file__).resolve().parents[1],
+                env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+                capture_output=True, text=True, encoding="utf-8", timeout=45,
+            )
+            self.assertTrue(report_path.exists(), result.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(result.returncode, 0, report.get("error") or result.stderr)
+            self.assertTrue(report["passed"], report.get("error"))
+            self.assertFalse(report["frozen"])
+            self.assertGreaterEqual(report["cycles"], 3)
+            self.assertEqual(report["modernImageRequests"], 3)
+            self.assertEqual(report["modernTextRequests"], 1)
+            for check in ("role_heading_image_response_binding", "clickable_image_response_binding",
+                          "unmarked_user_heading_image_response_binding",
+                          "modern_image_then_text_current_response_storage",
+                          "clipboard_requires_screen_clip_hotkey", "png_attachment_native_pipeline",
+                          "no_network_requests_or_native_hotkeys", "clean_window_shutdown"):
+                self.assertTrue(report["checks"][check], check)
+
 
 if __name__ == "__main__":
     unittest.main()

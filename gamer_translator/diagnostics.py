@@ -38,7 +38,7 @@ _TOKEN_FIELDS = frozenset({
 })
 _ENUM_TOKEN_VALUES = {
     "user_role_source": frozenset({
-        "none", "message_author", "user_bubble", "conversation_role", "aria_role", "role_conflict",
+        "none", "message_author", "user_bubble", "conversation_role", "aria_role", "heading_role", "role_conflict",
     }),
     "rejection_reason": frozenset({
         "none", "request_user_unbound", "last_user_mismatch", "response_user_mismatch",
@@ -51,6 +51,7 @@ _NUMBER_FIELDS = frozenset({
     "text_length", "image_width", "image_height", "image_bytes", "image_encoding_ms",
     "width", "height", "bytes", "size_bytes", "response_count", "attachment_count",
     "selected_file_count", "prompt_length", "file_count", "assistant_count", "user_count",
+    "user_role_candidates", "clickable_image_candidates",
     "progress", "pending_count", "changed_count", "error_count",
     "lag_ms", "exit_code", "line_number", "code", "severity", "threads", "intra_threads",
     "inter_threads", "cpu_count", "process_cpu_seconds", "process_cpu_percent",

@@ -129,6 +129,10 @@ Az Alt+V további javításának oka és ellenőrzése az [Alt+V vizsgálati jel
 
 A szövegbuborék nélküli képes kérések válaszfelismerésének javítása és a válasz elutasításának részletesebb naplózása a [képes válaszfelismerés vizsgálati jelentésében](docs/image-response-audit.md) szerepel.
 
+A kattintható képes üzenetek felismerésének, a sorban várakozó képeknek és az időtúllépés után bennmaradó küldési állapotnak a javítása az [egymás utáni képküldések vizsgálati jelentésében](docs/second-image-audit.md) szerepel.
+
+A szerepattribútum nélküli képes üzenetek élő DOM-vizsgálata és a saját UI-fejlécből történő felismerés javítása a [szerepfejlécek vizsgálati jelentésében](docs/heading-image-audit.md) szerepel.
+
 ## Megjegyzés
 
 - A projekt nem az OpenAI API-t használja, hanem a webes ChatGPT felületet.

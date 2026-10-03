@@ -6,6 +6,12 @@ A `5.13` kiadásban javított Alt+V, új ChatGPT üzenetfelület és további me
 
 A `5.14` képes válaszfelismerési javítása és a kéréshez kötés új diagnosztikai mezői a [képes válaszfelismerés vizsgálati jelentésében](image-response-audit.md) szerepelnek.
 
+A `5.15` kattintható képes üzeneteinek felismerése, az eredménylekérdezés ismétlése és az elakadt küldés megszakítása az [egymás utáni képküldések vizsgálati jelentésében](second-image-audit.md) szerepel.
+
+A `5.16` szerepattribútum nélküli képes üzeneteinek felismerése és az élő technikai DOM-vizsgálat a [szerepfejlécek vizsgálati jelentésében](heading-image-audit.md) szerepel. A saját UI-fejlécből felismert szerep a naplóban `user_role_source=heading_role` értékkel jelenik meg.
+
+A `5.15` válaszállapot-eseményeinek `user_role_candidates` és `clickable_image_candidates` mezői csak darabszámot tartalmaznak. A `delivery.poll_retry`, `delivery.poll_recovered`, `page.delivery_cancelled` és `page.delivery_rejected` események segítenek elkülöníteni a lassú lekérdezést, a megszakítást és a foglalt küldést.
+
 ## Naplók helye és működése
 
 A normál alkalmazás automatikusan JSONL eseménynaplót ír a `%LOCALAPPDATA%\Gamer Translator\logs` könyvtárba. A Beállítások `Naplómappa megnyitása` gombja ezt a könyvtárat nyitja meg. A napló nem kerül feltöltésre.

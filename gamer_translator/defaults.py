@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "Gamer Translator"
-APP_VERSION = "5.14"
+APP_VERSION = "5.16"
 WINDOW_TITLE = APP_NAME
 CHATGPT_URL = "https://chatgpt.com/"
 DEFAULT_RESPONSE_TIMEOUT_MS = 180000

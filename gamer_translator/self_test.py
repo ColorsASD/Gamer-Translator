@@ -56,10 +56,16 @@ document.querySelector('form').addEventListener('submit', event => {
 
 
 MODERN_IMAGE_FIXTURE = """<!doctype html><html lang="hu"><head><meta charset="utf-8">
-<link rel="icon" href="data:,"><title>Offline képes szerepfejléc-próba</title></head>
+<link rel="icon" href="data:,"><title>Offline képes szerepfejléc-próba</title>
+<style>.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}</style></head>
 <body><main id="conversation">
-<div data-message-author-role="user" data-message-id="history-user">Korábbi kérés.</div>
-<div data-message-author-role="assistant" data-message-id="history-assistant">Korábbi kész válasz.</div>
+<div><h4 class="sr-only">You said:</h4>
+<div data-chatgpt-search-unit-key="history-user-unit" data-chatgpt-search-message-ids='["history-user"]'>
+<div data-user-message-bubble>Korábbi kérés.</div></div></div>
+<div data-chatgpt-search-unit-key="history-assistant-unit" data-chatgpt-search-message-ids='["history-assistant"]'>
+<h4 class="sr-only" data-conversation-role="assistant">ChatGPT said:</h4>
+<div data-markdown-text-style>Korábbi kész válasz.</div></div>
 </main><form><div data-testid="composer"><textarea id="prompt-textarea"></textarea>
 <input id="attachment" type="file" accept="image/*">
 <button data-testid="send-button" type="submit" aria-label="Send message">Send</button>
@@ -77,16 +83,27 @@ document.querySelector('form').addEventListener('submit',event=>{
   document.body.dataset.fileCount=String(attachment.files.length);
   document.body.dataset.promptLength=String(composer.value.length);
   document.body.dataset.finished='false';
-  const turn=document.createElement('div'); turn.dataset.turnKey='modern-turn-'+count;
-  const user=document.createElement('div'); user.dataset.messageId='modern-user-'+count;
-  const headingWrapper=document.createElement('div'), headingInner=document.createElement('div');
-  const heading=document.createElement('h5'); heading.dataset.conversationRole='user';
-  heading.className='sr-only'; heading.textContent='You said:';
-  headingInner.append(heading); headingWrapper.append(headingInner); user.append(headingWrapper);
-  const content=document.createElement('div'), image=document.createElement('img');
-  image.src=URL.createObjectURL(attachment.files[0]); image.width=32; image.height=32;
-  content.append(image); user.append(content); turn.append(user);
-  const answer=document.createElement('div'); answer.dataset.messageId='modern-assistant-'+count;
+  const turn=document.createElement('div'), user=document.createElement('div');
+  const heading=document.createElement('h4');
+  heading.className='sr-only'; heading.textContent='You said:'; user.append(heading);
+  const content=document.createElement('div');
+  content.dataset.chatgptSearchUnitKey='modern-user-unit-'+count;
+  content.dataset.chatgptSearchMessageIds=JSON.stringify(['modern-user-'+count]);
+  if(attachment.files.length){
+    const imageWrapper=document.createElement('div'), imageButton=document.createElement('div');
+    imageButton.setAttribute('role','button'); imageButton.setAttribute('aria-label','Open image');
+    const image=document.createElement('img'); image.dataset.state='closed';
+    image.src=URL.createObjectURL(attachment.files[0]); image.width=32; image.height=32;
+    imageButton.append(image); imageWrapper.append(imageButton); content.append(imageWrapper);
+  }else{
+    const bubble=document.createElement('div'); bubble.dataset.userMessageBubble='';
+    bubble.textContent=composer.value; content.append(bubble);
+  }
+  user.append(content); turn.append(user);
+  const answer=document.createElement('div');
+  answer.dataset.chatgptSearchUnitKey='modern-assistant-unit-'+count;
+  answer.dataset.chatgptSearchMessageIds=JSON.stringify(['modern-assistant-'+count]);
+  answer.dataset.contentSearchUnitKey='modern-assistant-unit-'+count;
   answer.setAttribute('aria-busy','true');
   const answerHeading=document.createElement('h4'); answerHeading.dataset.conversationRole='assistant';
   answerHeading.className='sr-only'; answerHeading.textContent='ChatGPT said:';
@@ -282,8 +299,10 @@ def run_self_test(report_path: Path, duration: int, model_dir: Path | None = Non
             report["checks"]["clipboard_requires_screen_clip_hotkey"] = True
             report["checks"]["png_attachment_native_pipeline"] = True
 
-            # A régi felismert beszélgetés után a képes kérésnek csak mély
-            # szerepfejléce és saját üzenetazonosítója van, szöveges buborék nélkül.
+            # Az élő oldalon a felhasználói szerep csak a saját h4.sr-only
+            # fejlécből olvasható. A testvér képunit keresési azonosítót kap,
+            # a külső wrappernek nincs szerep- vagy üzenetadat-attribútuma.
+            # A kép role=button divben van, szöveges buborék nélkül.
             loaded = []
             window.page.loadFinished.connect(loaded.append)
             window.page.setHtml(MODERN_IMAGE_FIXTURE, QUrl("https://chatgpt.com/"))
@@ -299,7 +318,7 @@ def run_self_test(report_path: Path, duration: int, model_dir: Path | None = Non
             assert window._run_javascript("document.body.dataset.submitCount", timeout_ms=5000) == "0"
             assert window.pending_clipboard_payload is None
             request_ids = []
-            for expected_count in (1, 2):
+            for expected_count in (1, 2, 3):
                 window._arm_screen_clip_hotkey()
                 window.test_clipboard.setImage(image)
                 window._wait_with_events(250)
@@ -314,16 +333,44 @@ def run_self_test(report_path: Path, duration: int, model_dir: Path | None = Non
                 assert window.translation_result_request_id == window.latest_translation_request_id
                 request_ids.append(window.translation_result_request_id)
                 assert not window.browser_interaction_active and not window.clipboard_translation_in_progress
-            assert request_ids[0] and request_ids[1] and request_ids[0] != request_ids[1]
+            assert all(request_ids) and len(set(request_ids)) == 3
             modern_user_count = window._run_javascript(
-                "document.querySelectorAll('[data-message-id^=\"modern-user-\"] img').length", timeout_ms=5000,
+                "document.querySelectorAll('[data-chatgpt-search-unit-key^=\"modern-user-unit-\"] img').length", timeout_ms=5000,
             )
-            assert modern_user_count == 2, "Mindkét szöveg nélküli képkérésnek saját kép kell."
+            assert modern_user_count == 3, "Mindhárom szöveg nélküli képkérésnek saját kép kell."
+            clickable_image_count = window._run_javascript(
+                "document.querySelectorAll('[data-chatgpt-search-unit-key^=\"modern-user-unit-\"] div[role=\"button\"] > img[data-state]').length",
+                timeout_ms=5000,
+            )
+            assert clickable_image_count == 3, "Mindhárom képkérésnek kattintható kép kell."
+            assert window._run_javascript(
+                "document.querySelectorAll('main [data-conversation-role=\"user\"], main [data-message-author-role=\"user\"]').length",
+                timeout_ms=5000,
+            ) == 0, "A próba nem támaszkodhat felhasználói szerep-attribútumra."
             window.test_clipboard.setImage(image)
             window._wait_with_events(250)
-            assert window._run_javascript("document.body.dataset.submitCount", timeout_ms=5000) == "2"
+            assert window._run_javascript("document.body.dataset.submitCount", timeout_ms=5000) == "3"
             window.screen_clip_hotkey_enabled.setChecked(False)
             report["checks"]["role_heading_image_response_binding"] = True
+            report["checks"]["clickable_image_response_binding"] = True
+            report["checks"]["unmarked_user_heading_image_response_binding"] = True
+            report["modernImageRequests"] = 3
+            # Az azonos kész szövegű gyors chatnek is új aktuális eredmény kell,
+            # miután a szöveg nélküli képek eltérő unitazonosítóval elkészültek.
+            window._process_quick_chat_translation("Modern szöveges önteszt: Árvíztűrő /spawn")
+            assert window._run_javascript("document.body.dataset.submitCount", timeout_ms=5000) == "4"
+            assert window._run_javascript("document.body.dataset.fileCount", timeout_ms=5000) == "0"
+            assert int(window._run_javascript("document.body.dataset.promptLength", timeout_ms=5000)) > 0
+            assert window._run_javascript("document.body.dataset.finished", timeout_ms=5000) == "true"
+            assert window.last_translated_text == "Modern képfordítás elkészült.", window.last_run_status
+            assert window.test_clipboard.text == window.last_translated_text
+            assert store.load_last_translated_text() == window.last_translated_text
+            assert window.translation_result_complete
+            assert window.translation_result_request_id == window.latest_translation_request_id
+            assert window.translation_result_request_id and window.translation_result_request_id not in request_ids
+            assert not window.browser_interaction_active and not window.clipboard_translation_in_progress
+            report["checks"]["modern_image_then_text_current_response_storage"] = True
+            report["modernTextRequests"] = 1
             assert not window.network_blocker.blocked
             assert not window.registered_hotkeys and window.keyboard_hook_handle is None and window.mouse_hook_handle is None
             report["checks"]["no_network_requests_or_native_hotkeys"] = True

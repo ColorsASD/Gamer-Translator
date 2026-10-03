@@ -69,7 +69,7 @@ SUSPENDED_FRAME_INTERVAL_MS = 1200
 BACKGROUND_TASK_EVENT_INTERVAL_MS = 40
 SCREEN_CLIP_ARM_TIMEOUT_SECONDS = 45.0
 AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS = 70000
-AUTOMATION_SCRIPT_VERSION = "2026-10-02-1"
+AUTOMATION_SCRIPT_VERSION = "2026-10-03-2"
 INTERACTION_HEARTBEAT_INTERVAL_MS = 250
 INTERACTION_STALE_RESET_SECONDS = 8.0
 RESPONSE_FOLLOWUP_IDLE_TIMEOUT_SECONDS = 20.0
@@ -1034,6 +1034,10 @@ class BrowserOperationCancelled(RuntimeError):
     """A kilépés miatt megszakított böngészőművelet nem oldalhiba."""
 
 
+class BrowserJavaScriptTimeout(RuntimeError):
+    """A renderer visszahívása késett; a művelet még futhat az oldalon."""
+
+
 class MainWindow(QMainWindow):
     browser_operations_cancelled = Signal()
     def __init__(self, *, store: SettingsStore | None = None, clipboard: Any = None,
@@ -1062,6 +1066,7 @@ class MainWindow(QMainWindow):
         self.translation_result_request_id = ""
         self.translation_result_complete = bool(self.last_translated_text)
         self.active_translation_request_id = ""
+        self.active_delivery_call_id = ""
         self.pending_clipboard_payload_queue: list[dict[str, Any]] = []
         self.pending_hotkey_actions: list[tuple[str, int]] = []
         self.registered_hotkeys: dict[str, tuple[int, int]] = {}
@@ -2381,7 +2386,8 @@ class MainWindow(QMainWindow):
         if payload is None:
             return
 
-        log_event("capture.dequeued", request_id=payload.get("requestId"), pending_count=len(queue))
+        log_event("capture.dequeued", request_id=payload.get("requestId"),
+                  pending_count=len(queue) + int(self.pending_clipboard_payload is not None))
 
         self.last_seen_image_signature = str(payload["imageSignature"])
         self._process_clipboard_translation(payload)
@@ -2646,6 +2652,7 @@ class MainWindow(QMainWindow):
         self.response_followup_error_count = 0
         self.response_followup_request_id = getattr(self, "active_translation_request_id", "")
         self.response_followup_diagnostic_call_id = getattr(self, "last_delivery_diagnostic_call_id", "")
+        self.response_followup_last_diagnostic_sequence = getattr(self, "last_delivery_diagnostic_sequence", 0)
         self.response_followup_waiting_for_first_response = not bool(getattr(self, "last_translated_text", ""))
         log_event("response.followup_started", request_id=self.response_followup_request_id,
                   response_pending=self.response_followup_waiting_for_first_response)
@@ -2670,6 +2677,7 @@ class MainWindow(QMainWindow):
         self.response_followup_request_id = ""
         self.response_followup_waiting_for_first_response = False
         self.response_followup_diagnostic_call_id = ""
+        self.response_followup_last_diagnostic_sequence = 0
         if hasattr(self, "_sync_browser_host_mode"):
             self._sync_browser_host_mode()
             self._sync_browser_runtime_state()
@@ -2729,7 +2737,6 @@ class MainWindow(QMainWindow):
                       const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
                       const diagnosticBucket = window.__gamerTranslatorDiagnostics || Object.create(null);
                       const diagnostics = diagnosticBucket[{json.dumps(diagnostic_call_id)}] || [];
-                      diagnosticBucket[{json.dumps(diagnostic_call_id)}] = [];
                       return JSON.stringify({{ progress: progressBucket[{json.dumps(progress_call_id)}] ?? null, diagnostics }});
                     }})()
                 """,
@@ -2762,7 +2769,10 @@ class MainWindow(QMainWindow):
         try:
             progress = json.loads(progress_json)
             if isinstance(progress, dict) and "diagnostics" in progress:
-                MainWindow._log_page_diagnostics(self, progress.get("diagnostics"), request_id)
+                self.response_followup_last_diagnostic_sequence = MainWindow._log_page_diagnostics(
+                    self, progress.get("diagnostics"), request_id,
+                    after_sequence=getattr(self, "response_followup_last_diagnostic_sequence", 0),
+                )
                 nested_progress = progress.get("progress")
                 progress = json.loads(nested_progress) if isinstance(nested_progress, str) and nested_progress else {}
             if not isinstance(progress, dict):
@@ -3159,6 +3169,10 @@ class MainWindow(QMainWindow):
         self.clipboard_translation_heartbeat_monotonic = time.monotonic()
 
     def _recover_stuck_interaction_flags(self) -> None:
+        # Az aktív natív kézbesítés saját határidővel és finally lezárással fut.
+        # Egy későn kiszolgált GUI-időzítő nem oldhatja fel közben a küldés zárát.
+        if getattr(self, "active_delivery_call_id", ""):
+            return
         now = time.monotonic()
         reset_browser_interaction = (
             self.browser_interaction_active
@@ -3950,8 +3964,10 @@ class MainWindow(QMainWindow):
         request_id = getattr(self, "active_translation_request_id", "") or call_id
         diagnostic_call_id = uuid.uuid4().hex
         self.last_delivery_diagnostic_call_id = diagnostic_call_id
+        self.last_delivery_diagnostic_sequence = 0
         progress_call_id = f"{call_id}-progress"
         payload_with_progress = dict(payload)
+        payload_with_progress["deliveryCallId"] = call_id
         payload_with_progress["progressCallId"] = progress_call_id
         payload_with_progress["diagnosticCallId"] = diagnostic_call_id
         log_event("delivery.started", request_id=request_id, has_image=bool(payload.get("imageDataUrl")),
@@ -3963,33 +3979,46 @@ class MainWindow(QMainWindow):
               window.__gamerTranslatorProgress = window.__gamerTranslatorProgress || Object.create(null);
               window.__gamerTranslatorDeliver({payload_json})
                 .then((result) => {{
-                  window.__gamerTranslatorResults["{call_id}"] = JSON.stringify(result);
+                  if (result?.cancelled !== true && !window.__gamerTranslatorIsDeliveryCancelled?.("{call_id}")) {{
+                    window.__gamerTranslatorResults["{call_id}"] = JSON.stringify(result);
+                  }}
                 }})
                 .catch((error) => {{
-                  window.__gamerTranslatorResults["{call_id}"] = JSON.stringify({{
-                    ok: false,
-                    error: String(error)
-                  }});
+                  if (!window.__gamerTranslatorIsDeliveryCancelled?.("{call_id}")) {{
+                    window.__gamerTranslatorResults["{call_id}"] = JSON.stringify({{
+                      ok: false,
+                      error: String(error)
+                    }});
+                  }}
                 }});
               return true;
             }})()
         """
         preserve_diagnostics = False
+        delivery_result_received = False
+        timeout_ms = (
+            int(payload.get("pageReadyTimeoutMs", self.settings.page_ready_timeout_ms))
+            + int(payload.get("responseTimeoutMs", DEFAULT_RESPONSE_TIMEOUT_MS))
+            + AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS
+        )
+        started_at = time.monotonic()
+        self.active_delivery_call_id = call_id
         try:
             self._run_javascript(launch_script, timeout_ms=5000)
 
-            timeout_ms = (
-                int(payload.get("pageReadyTimeoutMs", self.settings.page_ready_timeout_ms))
-                + int(payload.get("responseTimeoutMs", DEFAULT_RESPONSE_TIMEOUT_MS))
-                + AUTOMATION_SELF_HEAL_TIMEOUT_BUFFER_MS
-            )
-            started_at = time.monotonic()
             last_progress_sequence = 0
+            consecutive_poll_timeouts = 0
 
             while (time.monotonic() - started_at) * 1000 < timeout_ms:
                 self._touch_browser_interaction_heartbeat()
-                state_json = self._run_javascript(
-                    f"""
+                if getattr(self, "clipboard_translation_in_progress", False):
+                    self._touch_clipboard_translation_heartbeat()
+                remaining_ms = max(1, int(timeout_ms - (time.monotonic() - started_at) * 1000))
+                try:
+                    # A lekérdezés nem módosít rekeszt: egy későn végrehajtott
+                    # callback után is megmarad a kész válasz és a diagnosztika.
+                    state_json = self._run_javascript(
+                        f"""
                         (() => {{
                           const resultBucket = window.__gamerTranslatorResults || Object.create(null);
                           const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
@@ -3997,12 +4026,6 @@ class MainWindow(QMainWindow):
                           const progressValue = progressBucket["{progress_call_id}"] ?? null;
                           const diagnosticBucket = window.__gamerTranslatorDiagnostics || Object.create(null);
                           const diagnostics = diagnosticBucket["{diagnostic_call_id}"] || [];
-                          diagnosticBucket["{diagnostic_call_id}"] = [];
-
-                          if (resultValue !== undefined) {{
-                            delete resultBucket["{call_id}"];
-                            delete progressBucket["{progress_call_id}"];
-                          }}
 
                           return JSON.stringify({{
                             result: resultValue === undefined ? null : resultValue,
@@ -4010,12 +4033,25 @@ class MainWindow(QMainWindow):
                             diagnostics
                           }});
                         }})()
-                    """,
-                    timeout_ms=5000,
-                )
+                        """,
+                        timeout_ms=min(5000, remaining_ms),
+                    )
+                except BrowserJavaScriptTimeout:
+                    consecutive_poll_timeouts += 1
+                    log_event("delivery.poll_retry", level="WARNING", request_id=request_id,
+                              attempt=consecutive_poll_timeouts, reason="javascript_timeout")
+                    self._wait_with_events(UI_FRAME_INTERVAL_MS)
+                    continue
+                if consecutive_poll_timeouts:
+                    log_event("delivery.poll_recovered", request_id=request_id,
+                              attempt=consecutive_poll_timeouts)
+                    consecutive_poll_timeouts = 0
 
                 state = json.loads(state_json) if isinstance(state_json, str) and state_json else {}
-                MainWindow._log_page_diagnostics(self, state.get("diagnostics"), request_id)
+                self.last_delivery_diagnostic_sequence = MainWindow._log_page_diagnostics(
+                    self, state.get("diagnostics"), request_id,
+                    after_sequence=self.last_delivery_diagnostic_sequence,
+                )
                 progress_json = state.get("progress")
 
                 if isinstance(progress_json, str) and progress_json and progress_handler is not None:
@@ -4034,6 +4070,7 @@ class MainWindow(QMainWindow):
 
                 if isinstance(result_json, str) and result_json:
                     result = json.loads(result_json)
+                    delivery_result_received = True
                     preserve_diagnostics = bool(result.get("followUpProgressCallId"))
 
                     if result.get("ok") is False:
@@ -4058,6 +4095,9 @@ class MainWindow(QMainWindow):
                 self._run_javascript(
                     f"""
                         (() => {{
+                          if (!{str(delivery_result_received).lower()} && typeof window.__gamerTranslatorCancelDelivery === "function") {{
+                            window.__gamerTranslatorCancelDelivery("{call_id}");
+                          }}
                           const resultBucket = window.__gamerTranslatorResults || Object.create(null);
                           const progressBucket = window.__gamerTranslatorProgress || Object.create(null);
                           delete resultBucket["{call_id}"];
@@ -4071,8 +4111,13 @@ class MainWindow(QMainWindow):
                     """,
                     timeout_ms=3000,
                 )
-            except Exception:
+            except BrowserOperationCancelled:
                 pass
+            except Exception as error:
+                log_exception("delivery.cleanup_failed", error, request_id=request_id)
+            finally:
+                if getattr(self, "active_delivery_call_id", "") == call_id:
+                    self.active_delivery_call_id = ""
 
     def _wait_for_page_load(self, timeout_ms: int) -> None:
         if getattr(self, "operations_cancelled", False):
@@ -4154,6 +4199,8 @@ class MainWindow(QMainWindow):
                 self._touch_clipboard_translation_heartbeat()
 
         def handle_result(result: Any) -> None:
+            if result_box.get("closed"):
+                return
             result_box["done"] = True
             result_box["value"] = result
             if loop.isRunning():
@@ -4170,23 +4217,25 @@ class MainWindow(QMainWindow):
         heartbeat_timer.timeout.connect(touch_interaction_heartbeat)
         timer.start(timeout_ms)
         heartbeat_timer.start()
-        self.browser.page().runJavaScript(
-            guarded_script, QWebEngineScript.ScriptWorldId.ApplicationWorld, handle_result
-        )
-        if not result_box["done"]:
-            loop.exec()
-        timer.stop()
-        heartbeat_timer.stop()
-
-        if cancel_signal is not None:
-            cancel_signal.disconnect(handle_timeout)
+        try:
+            self.browser.page().runJavaScript(
+                guarded_script, QWebEngineScript.ScriptWorldId.ApplicationWorld, handle_result
+            )
+            if not result_box["done"]:
+                loop.exec()
+        finally:
+            result_box["closed"] = True
+            timer.stop()
+            heartbeat_timer.stop()
+            if cancel_signal is not None:
+                cancel_signal.disconnect(handle_timeout)
         if getattr(self, "operations_cancelled", False):
             raise BrowserOperationCancelled()
 
         if not result_box["done"]:
             log_event("browser.javascript_timeout", level="ERROR",
                       request_id=getattr(self, "active_translation_request_id", None), timeout_ms=timeout_ms)
-            raise RuntimeError("A JavaScript futtatása időtúllépéssel megszakadt.")
+            raise BrowserJavaScriptTimeout("A JavaScript visszahívása nem érkezett meg időben.")
 
         if not self._is_chatgpt_url(self.browser.url().toString()):
             raise RuntimeError("Az oldal címe megváltozott, az automatizálás megszakadt.")
@@ -4310,17 +4359,24 @@ class MainWindow(QMainWindow):
         self.automation_ready = False
         self._save_last_run_status("A ChatGPT böngészőfolyamata leállt. Nyisd meg újra a ChatGPT oldalt.")
 
-    def _log_page_diagnostics(self, entries: Any, request_id: str) -> None:
+    def _log_page_diagnostics(self, entries: Any, request_id: str, *, after_sequence: int | None = None) -> int:
+        last_sequence = after_sequence or 0
         if not isinstance(entries, list):
-            return
+            return last_sequence
         for entry in entries[:100]:
             if not isinstance(entry, dict) or not isinstance(entry.get("fields"), dict):
                 continue
+            if after_sequence is not None:
+                sequence = entry.get("seq")
+                if type(sequence) is not int or sequence <= last_sequence:
+                    continue
+                last_sequence = sequence
             event = entry.get("event")
             if isinstance(event, str) and event.isascii() and len(event) <= 80 and all(char.isalnum() or char in "._" for char in event):
                 fields = {key: value for key, value in entry["fields"].items()
                           if isinstance(key, str) and key not in {"event", "request_id", "level"}}
                 log_event(f"page.{event}", request_id=request_id, **fields)
+        return last_sequence
 
     def _is_chatgpt_url(self, url: str) -> bool:
         if not url:

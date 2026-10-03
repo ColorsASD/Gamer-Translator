@@ -1,8 +1,11 @@
 (() => {
-  const AUTOMATION_SCRIPT_VERSION = "2026-10-02-1";
+  const AUTOMATION_SCRIPT_VERSION = "2026-10-03-2";
   const TRUSTED_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
   const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
   let deliveryInProgress = false;
+  let activeDelivery = null;
+  const cancelledDeliveryIds = new Set();
+  const normalizeDeliveryCallId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,120}$/.test(value) ? value : "";
 
   function isTrustedPage() {
     return window.top === window && TRUSTED_ORIGINS.has(window.location.origin);
@@ -306,17 +309,12 @@
       state.observer = null;
     };
 
-    const waitForChange = (timeoutMs) => new Promise((resolve) => {
+    const waitForChange = (timeoutMs, cancellationPromise = null) => new Promise((resolve) => {
       start();
       ensureFramePacer().pulseFor(Math.min(
         ASSISTANT_RESPONSE_FOLLOW_UP_MAX_MS,
         Math.max(FRAME_PACER_BURST_MS, Number(timeoutMs) || FRAME_PACER_BURST_MS)
       ));
-
-      if (state.observer === null) {
-        window.setTimeout(() => resolve("timeout"), Math.max(FRAME_INTERVAL_MS, timeoutMs));
-        return;
-      }
 
       let finished = false;
       let timeoutId = 0;
@@ -337,8 +335,9 @@
       };
 
       const handleChange = () => finish("change");
-      state.listeners.add(handleChange);
+      if (state.observer !== null) state.listeners.add(handleChange);
       timeoutId = window.setTimeout(() => finish("timeout"), Math.max(FRAME_INTERVAL_MS, timeoutMs));
+      if (cancellationPromise) cancellationPromise.then(() => finish("cancelled"));
     });
 
     const subscribe = (listener) => {
@@ -416,12 +415,13 @@
       "assistant_count", "user_count", "text_length", "fresh", "stable", "has_identity",
       "request_user_bound", "last_user_matches_request", "response_user_matches_request",
       "assistant_identity_new", "user_role_source", "rejection_reason",
+      "user_role_candidates", "clickable_image_candidates",
       "auto_submit", "copy_response", "late", "ok"
     ]);
     const bindingBooleanFields = new Set([
       "request_user_bound", "last_user_matches_request", "response_user_matches_request", "assistant_identity_new"
     ]);
-    const roleSources = new Set(["none", "message_author", "user_bubble", "conversation_role", "aria_role", "role_conflict"]);
+    const roleSources = new Set(["none", "message_author", "user_bubble", "conversation_role", "aria_role", "heading_role", "role_conflict"]);
     const rejectionReasons = new Set([
       "none", "request_user_unbound", "last_user_mismatch", "response_user_mismatch", "assistant_identity_old",
       "assistant_text_missing", "assistant_text_transient", "assistant_pending"
@@ -438,7 +438,8 @@
     window.__gamerTranslatorDiagnostics = window.__gamerTranslatorDiagnostics || Object.create(null);
     const buckets = window.__gamerTranslatorDiagnostics;
     const entries = Array.isArray(buckets[normalizedCallId]) ? buckets[normalizedCallId] : [];
-    entries.push({ event, fields: safeFields });
+    const nextSequence = Number(entries[entries.length - 1]?.seq || 0) + 1;
+    entries.push({ event, fields: safeFields, seq: nextSequence });
     if (entries.length > 100) entries.splice(0, entries.length - 100);
     buckets[normalizedCallId] = entries;
     const keys = Object.keys(buckets);
@@ -533,6 +534,18 @@
     return;
   }
 
+  window.__gamerTranslatorIsDeliveryCancelled = (callId) => cancelledDeliveryIds.has(normalizeDeliveryCallId(callId));
+  window.__gamerTranslatorCancelDelivery = (callId) => {
+    const normalizedCallId = normalizeDeliveryCallId(callId);
+    if (!normalizedCallId) return { ok: false, cancelled: false, active: false };
+    cancelledDeliveryIds.add(normalizedCallId);
+    while (cancelledDeliveryIds.size > 256) cancelledDeliveryIds.delete(cancelledDeliveryIds.values().next().value);
+    const operation = activeDelivery;
+    const wasActive = Boolean(operation && operation.callId === normalizedCallId);
+    if (wasActive) operation.cancel();
+    return { ok: true, cancelled: true, active: wasActive };
+  };
+
   window.__gamerTranslatorDeliver = async function deliverPromptToChatGpt(payload) {
     if (!isTrustedPage()) {
       return { ok: false, error: "Az oldal eredete nem engedélyezett." };
@@ -543,9 +556,17 @@
     }
 
     const initializesWatcher = payload.initializeComposerAutoRecovery === true;
+    const deliveryCallId = normalizeDeliveryCallId(payload.deliveryCallId);
+    if (payload.deliveryCallId != null && !deliveryCallId) {
+      return { ok: false, error: "A küldés azonosítója hibás." };
+    }
+    if (deliveryCallId && cancelledDeliveryIds.has(deliveryCallId)) {
+      return { ok: false, cancelled: true, error: "A küldés megszakítva lett." };
+    }
 
     // Két átfedő küldés összekeverhetné a promptot, a képet és a választ.
     if (!initializesWatcher && deliveryInProgress) {
+      writeDiagnosticEntry(payload.diagnosticCallId, "delivery_rejected", { reason: "delivery_busy" });
       return { ok: false, error: "Már folyamatban van egy küldés." };
     }
 
@@ -574,9 +595,36 @@
       writeProgressEntry(payload.progressCallId, progress);
     };
     const shouldSuspendComposerAutoRecovery = !payload.initializeComposerAutoRecovery;
+    let resolveCancellation;
+    const operation = {
+      callId: deliveryCallId, cancelled: false, released: false,
+      cancellationPromise: new Promise((resolve) => { resolveCancellation = resolve; }),
+      release() {
+        if (operation.released || !shouldSuspendComposerAutoRecovery) return;
+        operation.released = true;
+        // Egy korábban megszakított finally nem oldhatja fel az új kérés zárát.
+        if (activeDelivery === operation) {
+          activeDelivery = null;
+          deliveryInProgress = false;
+          composerAutoRecovery.suspendedCount = Math.max(0, composerAutoRecovery.suspendedCount - 1);
+          composerAutoRecovery.requestEvaluation();
+        }
+      },
+      cancel() {
+        if (operation.cancelled) return;
+        operation.cancelled = true;
+        resolveCancellation();
+        reportDiagnostic("delivery_cancelled", { stage: deliveryStage, ok: true });
+        operation.release();
+      }
+    };
+    const assertDeliveryActive = () => {
+      if (operation.cancelled) throw new Error("A küldés megszakítva lett.");
+    };
 
     if (shouldSuspendComposerAutoRecovery) {
       deliveryInProgress = true;
+      activeDelivery = operation;
       composerAutoRecovery.suspendedCount += 1;
     }
 
@@ -604,11 +652,13 @@
 
       deliveryStage = "composer";
       let activeComposer = await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "beviteli mező");
+      assertDeliveryActive();
       reportDiagnostic("composer_ready");
 
       if (payload.repairExistingComposerPayload && !payload.prompt && !payload.imageDataUrl) {
         if (payload.autoSubmit) {
           await submitExistingComposerPayload(activeComposer);
+          assertDeliveryActive();
         }
 
         return {
@@ -622,17 +672,20 @@
       if (payload.imageDataUrl) {
         deliveryStage = "attachment";
         activeComposer = await attachImage(activeComposer);
+        assertDeliveryActive();
       }
 
       if (payload.prompt) {
         deliveryStage = "prompt";
         activeComposer = await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "frissített beviteli mező");
+        assertDeliveryActive();
         writePrompt(activeComposer, payload.prompt);
         activeComposer = await waitForPromptApplied(
           activeComposer,
           payload.prompt,
           Math.min(payload.pageReadyTimeoutMs, 1800)
         );
+        assertDeliveryActive();
         reportDiagnostic("prompt_verified", { prompt_length: payload.prompt.length });
       }
 
@@ -644,6 +697,7 @@
         } else {
           await submitTextMessage(activeComposer);
         }
+        assertDeliveryActive();
         reportDiagnostic("submission_confirmed");
       }
 
@@ -653,6 +707,7 @@
       if (payload.waitForResponse) {
         deliveryStage = "response";
         const responseResult = await waitForAssistantResponse(assistantSnapshotBeforeSend, payload.responseTimeoutMs, reportProgress);
+        assertDeliveryActive();
         assistantResponseText = responseResult.text;
         followUpProgressCallId = String(responseResult.followUpProgressCallId || "").trim();
         if (responseResult.responsePending) {
@@ -673,18 +728,16 @@
       reportDiagnostic("delivery_failed", { stage: deliveryStage, elapsed_ms: Date.now() - deliveryStartedAt });
       return {
         ok: false,
+        ...(operation.cancelled ? { cancelled: true } : {}),
         error: error instanceof Error ? error.message : String(error)
       };
     } finally {
-      if (shouldSuspendComposerAutoRecovery) {
-        deliveryInProgress = false;
-        composerAutoRecovery.suspendedCount = Math.max(0, composerAutoRecovery.suspendedCount - 1);
-        composerAutoRecovery.requestEvaluation();
-      }
+      operation.release();
     }
 
     async function attachImage(composerCandidate) {
       let composer = composerCandidate ?? await waitFor(() => findComposer(), payload.pageReadyTimeoutMs, "beviteli mező képbeillesztéshez");
+      assertDeliveryActive();
       const imageUploadTimeoutMs = getImageUploadTimeoutMs();
       const file = dataUrlToFile(payload.imageDataUrl, payload.imageFilename || "snip.png", payload.imageMimeType || "image/png");
       const expectedFileKey = describeSelectedFile(file);
@@ -699,6 +752,7 @@
 
       const methods = ["input", "drop"];
       for (let attempt = 0; attempt < methods.length; attempt += 1) {
+        assertDeliveryActive();
         composer = findComposer() || composer;
         const method = methods[attempt];
         const started = method === "input" ? attachViaFileInput(composer, file) : attachViaDrop(composer, file);
@@ -708,6 +762,7 @@
         // Az input.files saját beállítása nem bizonyít feltöltést. A teljes
         // várakozás lejártáig nincs második drop, így a lassú oldal nem dupláz képet.
         const attachedComposer = await waitForAttachmentReady(composer, beforeSnapshot, imageUploadTimeoutMs, expectedFileKey);
+        assertDeliveryActive();
         if (attachedComposer) {
           reportDiagnostic("attachment_ready", { method, attempt: attempt + 1 });
           return attachedComposer;
@@ -721,6 +776,7 @@
     }
 
     function clearUnconfirmedImageFileSelection(composer, expectedFileKey) {
+      assertDeliveryActive();
       const snapshot = captureComposerAttachmentSnapshot(composer);
       if (snapshot.hasAttachmentPreview || snapshot.hasPendingAttachmentWork) return;
       const scope = findComposerScope(composer);
@@ -747,6 +803,7 @@
     }
 
     function attachViaFileInput(composer, file) {
+      assertDeliveryActive();
       const scope = findComposerScope(composer);
       const fileInput = findFileInput(scope) || findFileInput(document);
 
@@ -763,11 +820,13 @@
       }
       fileInput.files = transfer.files;
       fileInput.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      assertDeliveryActive();
       fileInput.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
       return true;
     }
 
     function attachViaDrop(composer, file) {
+      assertDeliveryActive();
       const target = findComposerScope(composer) || composer;
 
       if (!(target instanceof HTMLElement)) {
@@ -778,7 +837,9 @@
       transfer.items.add(file);
 
       target.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+      assertDeliveryActive();
       target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+      assertDeliveryActive();
       target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
       return true;
     }
@@ -836,6 +897,7 @@
 
     async function submitTextMessage(composer, options = {}) {
       const liveComposer = await waitFor(() => findComposer() || composer, 15000, "beviteli mező");
+      assertDeliveryActive();
       const imageUploadTimeoutMs = getImageUploadTimeoutMs();
       const requireReadyAttachment = Boolean(options.requireReadyAttachment ?? payload.imageDataUrl);
       const preparedComposer = await waitFor(() => {
@@ -858,6 +920,7 @@
 
         return candidate;
       }, requireReadyAttachment ? imageUploadTimeoutMs : 12000, "beküldhető tartalom");
+      assertDeliveryActive();
       const beforeState = captureComposerSubmitState(preparedComposer);
       const expandedEditorMode = isExpandedComposerEditor(preparedComposer);
       const attempts = [];
@@ -928,6 +991,7 @@
 
     async function submitExistingComposerPayload(composerCandidate) {
       const liveComposer = await waitFor(() => findComposer() || composerCandidate, 15000, "beviteli mező");
+      assertDeliveryActive();
       let currentState = captureComposerSubmitState(liveComposer);
 
       if (!hasComposerPayloadState(currentState)) {
@@ -942,6 +1006,7 @@
             ? candidate
             : null;
         }, getImageUploadTimeoutMs(), "beküldhető composer tartalom");
+        assertDeliveryActive();
 
         currentState = captureComposerSubmitState(awaitedComposer);
       }
@@ -967,11 +1032,13 @@
 
     async function submitImageMessage(composer) {
       const liveComposer = await waitFor(() => findComposer() || composer, 15000, "beviteli mező");
+      assertDeliveryActive();
       const imageUploadTimeoutMs = getImageUploadTimeoutMs();
       const preparedComposer = await waitFor(() => {
         const candidate = findComposer() || liveComposer;
         return isImageReadyForSubmit(candidate) ? candidate : null;
       }, imageUploadTimeoutMs, "feltöltött kép");
+      assertDeliveryActive();
       const beforeState = captureComposerSubmitState(preparedComposer);
       const attempts = [];
 
@@ -1029,6 +1096,7 @@
     }
 
     function writePrompt(element, prompt) {
+      assertDeliveryActive();
       element.focus();
       const hasMultilinePrompt = String(prompt || "").includes("\n");
 
@@ -1099,6 +1167,7 @@
     }
 
     async function waitForPromptApplied(composer, prompt, timeoutMs) {
+      assertDeliveryActive();
       const expectedPrompt = normalizePromptStructure(prompt);
 
       if (!expectedPrompt) {
@@ -1108,6 +1177,7 @@
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < timeoutMs) {
+        assertDeliveryActive();
         const liveComposer = findComposer() || composer;
         const currentPrompt = normalizePromptStructure(readComposerText(liveComposer));
 
@@ -1464,6 +1534,7 @@
     }
 
     async function waitForAttachmentReady(composer, beforeSnapshot, timeoutMs, expectedFileKey) {
+      assertDeliveryActive();
       let observedSnapshot = beforeSnapshot;
       const startedAt = Date.now();
 
@@ -1774,16 +1845,16 @@
 
     function getMessageStableId(node) {
       if (!(node instanceof HTMLElement)) return "";
-      const selectionNode = node.hasAttribute("data-chatgpt-selection-message-id") ? node : node.closest("[data-chatgpt-selection-message-id]");
-      const selectionId = selectionNode?.getAttribute("data-chatgpt-selection-message-id");
+      // A legközelebbi saját üzenethatár azonosítója elsőbbséget élvez
+      // egy külső, akár usert és assistantet együtt tartalmazó körével szemben.
+      const messageBoundary = node.closest('[data-chatgpt-selection-message-id], [data-message-id], [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]');
+      const selectionId = messageBoundary?.getAttribute("data-chatgpt-selection-message-id");
       if (selectionId) return `message:${selectionId}`;
-      const messageNode = node.hasAttribute("data-message-id") ? node : node.closest("[data-message-id]");
-      const messageId = messageNode?.getAttribute("data-message-id");
+      const messageId = messageBoundary?.getAttribute("data-message-id");
       if (messageId) return `message:${messageId}`;
-      const searchUnit = node.closest("[data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]");
-      const messageIds = searchUnit?.getAttribute("data-chatgpt-search-message-ids");
+      const messageIds = messageBoundary?.getAttribute("data-chatgpt-search-message-ids");
       if (messageIds) return `messages:${messageIds}`;
-      const unitKey = searchUnit?.getAttribute("data-chatgpt-search-unit-key");
+      const unitKey = messageBoundary?.getAttribute("data-chatgpt-search-unit-key");
       if (unitKey) return `unit:${unitKey}`;
       const turnNode = node.closest('[data-testid^="conversation-turn-"], [data-turn-id]');
       const turnId = turnNode?.getAttribute("data-turn-id") || turnNode?.getAttribute("data-testid");
@@ -1856,6 +1927,7 @@
     }
 
     async function waitForAssistantResponse(previousSnapshot, timeoutMs, reportProgress) {
+      assertDeliveryActive();
       let observedSnapshot = captureAssistantSnapshot();
       let latestUsableSnapshot = null;
       const startedAt = Date.now();
@@ -1922,6 +1994,7 @@
     }
 
     function startAssistantResponseFollowUp(previousSnapshot, initialSnapshot) {
+      assertDeliveryActive();
       const baseProgressCallId = String(payload.progressCallId || "").trim();
 
       if (!baseProgressCallId || (initialSnapshot && !isUsableAssistantSnapshot(initialSnapshot, previousSnapshot))) {
@@ -2055,6 +2128,15 @@
       else if (!snapshot?.lastText) rejectionReason = "assistant_text_missing";
       else if (isTransientAssistantText(snapshot.lastText)) rejectionReason = "assistant_text_transient";
       else if (!stable) rejectionReason = "assistant_pending";
+      const userRoleCandidates = Array.from(document.querySelectorAll('[data-message-author-role="user"], [data-conversation-role="user"], [data-user-message-bubble], h1, h2, h3, h4, h5, h6'))
+        .filter((element) => isDomTrackableElement(element) && (element.getAttribute("data-message-author-role") === "user"
+          || element.getAttribute("data-conversation-role") === "user" || element.hasAttribute("data-user-message-bubble")
+          || getUiMessageHeadingRole(element) === "user")).length;
+      const clickableImageCandidates = Array.from(document.querySelectorAll('img'))
+        .filter((image) => isDomTrackableElement(image) && image.closest('button, [role="button"]')
+          && getMessageAuthorEvidence(image).role === "user"
+          && !image.closest('[role="menu"], [role="menuitem"], [role="toolbar"], [role="heading"], [data-radix-menu-content], [data-radix-dropdown-menu-content]')
+          && !isAvatarOrMessageControlImage(image, document.body)).length;
       reportDiagnostic("response_snapshot", {
         assistant_count: snapshot?.count || 0, user_count: snapshot?.userCount || 0,
         text_length: String(snapshot?.lastText || "").length, pending: Boolean(snapshot?.lastPending),
@@ -2062,6 +2144,7 @@
         request_user_bound: requestUserBound, last_user_matches_request: lastUserMatchesRequest,
         response_user_matches_request: responseUserMatchesRequest, assistant_identity_new: assistantIdentityNew,
         user_role_source: snapshot?.lastUserRoleSource || "none", rejection_reason: rejectionReason,
+        user_role_candidates: userRoleCandidates, clickable_image_candidates: clickableImageCandidates,
         ...fields
       });
     }
@@ -2252,10 +2335,14 @@
         .filter(isDomTrackableElement)
         .map(findConversationRoleMessageScope)
         .filter((element) => element && doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
+      const headingScopeMatches = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'))
+        .filter((element) => getUiMessageHeadingRole(element) === normalizedAuthorRole)
+        .map(findConversationRoleMessageScope)
+        .filter((element) => element && doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
       const fallbackMatches = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"], article, [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]'))
         .filter(isDomTrackableElement)
         .filter((element) => doesMessageNodeMatchAuthor(element, normalizedAuthorRole));
-      const matches = Array.from(new Set([...directMatches, ...modernMatches, ...roleScopeMatches, ...fallbackMatches]));
+      const matches = Array.from(new Set([...directMatches, ...modernMatches, ...roleScopeMatches, ...headingScopeMatches, ...fallbackMatches]));
       // A belső szerep-node elsőbbséget élvez a körülötte álló article helyett.
       const deduplicated = matches.filter((element) => !matches.some((other) => other !== element && element.contains(other)));
       return deduplicated.sort((left, right) => left.compareDocumentPosition(right) & 4 ? -1 : left.compareDocumentPosition(right) & 2 ? 1 : 0);
@@ -2302,7 +2389,7 @@
 
     function findConversationRoleMessageScope(marker) {
       if (!(marker instanceof HTMLElement) || !isDomTrackableElement(marker)) return null;
-      const role = String(marker.getAttribute("data-conversation-role") || "").trim().toLowerCase();
+      const role = String(marker.getAttribute("data-conversation-role") || getUiMessageHeadingRole(marker)).trim().toLowerCase();
       if (!["user", "assistant"].includes(role)) return null;
       const boundarySelector = '[data-message-id], [data-chatgpt-selection-message-id], [data-message-author-role], [data-user-message-bubble], [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids], [data-testid^="conversation-turn-"], [data-turn-id], [data-turn-key], [data-content-search-turn-key], article';
       let scope = /^H[1-6]$/.test(marker.tagName) || marker.getAttribute("role") === "heading"
@@ -2318,11 +2405,49 @@
       return null;
     }
 
+    function getUiMessageHeadingRole(marker) {
+      if (!(marker instanceof HTMLElement) || !isDomTrackableElement(marker)
+        || !/^H[1-6]$/.test(marker.tagName)
+        || !String(marker.getAttribute("class") || "").split(/\s+/).includes("sr-only")) return "";
+      // Csak a ChatGPT saját teljes UI-felirata szerepjel. A felhasználói
+      // tartalomban idézett fejléc és a tetszőleges név-/szövegrészlet nem az.
+      const label = normalizeWhitespace(marker.textContent).toLowerCase();
+      const role = label === "you said:" ? "user" : label === "chatgpt said:" ? "assistant" : "";
+      if (!role || marker.closest('blockquote, pre, code, form, button, [role="button"], [role="menu"], [role="menuitem"], [role="toolbar"], [data-radix-menu-content], [data-radix-dropdown-menu-content], [data-chatgpt-composer], [data-user-message-bubble], [data-chatgpt-selection-message-id]')) return "";
+      for (let parent = marker.parentElement; parent instanceof HTMLElement; parent = parent.parentElement) {
+        if (parent.hasAttribute("data-markdown-text-style") || /(?:markdown|prose)/i.test(String(parent.getAttribute("class") || ""))) return "";
+        // Az igazolt user UI-fejléc a saját keresőegység testvérága.
+        // A kereshető üzenettartalom belsejében álló szöveg nem fejlécjel.
+        if (parent.hasAttribute("data-chatgpt-search-unit-key") && parent.hasAttribute("data-chatgpt-search-message-ids")) return "";
+        if (["HTML", "BODY", "MAIN"].includes(parent.tagName)) break;
+      }
+      const container = marker.parentElement;
+      const contentUnits = Array.from(container.querySelectorAll('[data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]'))
+        .filter((unit) => isDomTrackableElement(unit) && !unit.contains(marker)
+          && String(unit.getAttribute("data-chatgpt-search-unit-key") || "").trim()
+          && String(unit.getAttribute("data-chatgpt-search-message-ids") || "").trim());
+      // Az attribútum nélküli fejléc csak a saját, egyetlen igazolt
+      // üzenetágának szerepét adja meg; egy kép önmagában nem üzenethatár.
+      if (contentUnits.length !== 1) return "";
+      return role;
+    }
+
+    function getAdjacentMessageHeadingEvidence(boundary) {
+      const container = boundary.parentElement;
+      if (!(container instanceof HTMLElement) || ["HTML", "BODY", "MAIN", "FORM"].includes(container.tagName)) return { role: "", source: "none" };
+      const ownHeadings = Array.from(container.querySelectorAll('h1, h2, h3, h4, h5, h6'))
+        .filter((marker) => !boundary.contains(marker) && getUiMessageHeadingRole(marker)
+          && findConversationRoleMessageScope(marker) === container);
+      // A belső stabil üzenethatár csak a saját konténerének fejlécét
+      // örökölheti; egy külső közös user+assistant körét nem.
+      return ownHeadings.length ? getMessageAuthorEvidence(container, { inherit: false }) : { role: "", source: "none" };
+    }
+
     function getMessageAuthorEvidence(element, options = {}) {
       if (!(element instanceof HTMLElement) || !isDomTrackableElement(element)) return { role: "", source: "none" };
       const collect = (scope) => {
         const signals = [];
-        const nodes = [scope, ...Array.from(scope.querySelectorAll('[data-message-author-role], [data-conversation-role], [data-user-message-bubble]'))]
+        const nodes = [scope, ...Array.from(scope.querySelectorAll('[data-message-author-role], [data-conversation-role], [data-user-message-bubble], h1, h2, h3, h4, h5, h6'))]
           .filter(isDomTrackableElement);
         for (const node of nodes) {
           for (const [attribute, source] of [["data-message-author-role", "message_author"], ["data-conversation-role", "conversation_role"]]) {
@@ -2330,6 +2455,8 @@
             if (["user", "assistant"].includes(role)) signals.push({ role, source });
           }
           if (node.hasAttribute("data-user-message-bubble")) signals.push({ role: "user", source: "user_bubble" });
+          const headingRole = getUiMessageHeadingRole(node);
+          if (headingRole) signals.push({ role: headingRole, source: "heading_role" });
         }
         const label = String(scope.getAttribute("aria-label") || "").trim().toLowerCase();
         if (/^(?:user|you)(?:\s+(?:said|message))?:?$/.test(label)) signals.push({ role: "user", source: "aria_role" });
@@ -2344,11 +2471,20 @@
         if (evidence.role && ["user", "assistant"].includes(parentRole) && parentRole !== evidence.role) return { role: "", source: "role_conflict" };
       }
       if (evidence.role || evidence.source === "role_conflict" || options.inherit === false) return evidence;
+      if (element.matches('[data-chatgpt-search-unit-key][data-chatgpt-search-message-ids]')) {
+        // A saját, szerep nélküli keresőegység nem örökölheti egy
+        // következő assistant testvérágának szerepét a közös külső körből.
+        return getAdjacentMessageHeadingEvidence(element);
+      }
       for (let parent = element.parentElement; parent instanceof HTMLElement; parent = parent.parentElement) {
         if (["HTML", "BODY", "MAIN", "FORM"].includes(parent.tagName)) break;
         evidence = collect(parent);
         if (evidence.role || evidence.source === "role_conflict") return evidence;
-        if (parent.matches('[data-message-id], [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids], [data-turn-key], [data-content-search-turn-key], article')) break;
+        if (parent.matches('[data-message-id], [data-chatgpt-search-unit-key][data-chatgpt-search-message-ids], [data-turn-key], [data-content-search-turn-key], article')) {
+          evidence = getAdjacentMessageHeadingEvidence(parent);
+          if (evidence.role || evidence.source === "role_conflict") return evidence;
+          break;
+        }
       }
       return { role: "", source: "none" };
     }
@@ -2357,8 +2493,25 @@
       if (!(scope instanceof HTMLElement)) return false;
       return Array.from(scope.querySelectorAll("img")).some((image) => (
         isDomTrackableElement(image) && Boolean(image.getAttribute("src") || image.getAttribute("srcset"))
-        && !image.closest('button, [role="button"], [role="menu"], [role="menuitem"], [role="heading"], h1[data-conversation-role], h2[data-conversation-role], h3[data-conversation-role], h4[data-conversation-role], h5[data-conversation-role], h6[data-conversation-role]')
+        && !image.closest('[role="menu"], [role="menuitem"], [role="toolbar"], [role="heading"], [data-radix-menu-content], [data-radix-dropdown-menu-content], h1[data-conversation-role], h2[data-conversation-role], h3[data-conversation-role], h4[data-conversation-role], h5[data-conversation-role], h6[data-conversation-role]')
+        && !isAvatarOrMessageControlImage(image, scope)
+        // A képnézegető button tartalma a saját explicit user kör képe.
+        // Önmagában egy tetszőleges gombban vagy avatarban álló kép nem szerepbizonyíték.
+        && (!image.closest('button, [role="button"]') || getMessageAuthorEvidence(scope).role === "user")
       ));
+    }
+
+    function isAvatarOrMessageControlImage(image, scope) {
+      const avatarPattern = /(?:^|[\s_/-])(?:avatar|profile[\s_-]*(?:photo|picture|image)|user[\s_-]*icon)(?:$|[\s_/-])/i;
+      for (let node = image; node instanceof HTMLElement; node = node.parentElement) {
+        if (node.hasAttribute("data-avatar") || node.getAttribute("data-slot") === "avatar") return true;
+        if (["class", "data-testid", "alt", "aria-label"].some((attribute) => avatarPattern.test(String(node.getAttribute(attribute) || "")))) return true;
+        if (node.matches('button, [role="button"]') && ((node.hasAttribute("aria-haspopup")
+          && !["dialog", "false"].includes(String(node.getAttribute("aria-haspopup") || "").toLowerCase()))
+          || node.getAttribute("type") === "submit")) return true;
+        if (node === scope) break;
+      }
+      return false;
     }
 
     function extractAssistantText(element) {
@@ -2719,6 +2872,7 @@
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < timeoutMs) {
+        assertDeliveryActive();
         const value = factory();
 
         if (value) {
@@ -3132,6 +3286,7 @@
     }
 
     async function waitForSubmissionTransition(beforeState, composer, timeoutMs) {
+      assertDeliveryActive();
       let observedState = captureComposerSubmitState(findComposer() || composer);
 
       if (hasSubmissionTransition(beforeState, observedState)) {
@@ -3169,6 +3324,7 @@
     }
 
     async function ensureSubmissionDelivered(composer, beforeState, attempts, failureMessage) {
+      assertDeliveryActive();
       let liveComposer = findComposer() || composer;
       let afterState = captureComposerSubmitState(liveComposer);
 
@@ -3183,6 +3339,7 @@
       }
 
       for (let checkIndex = 0; checkIndex < SELF_HEAL_CHECK_LIMIT; checkIndex += 1) {
+        assertDeliveryActive();
         const attempt = attempts[checkIndex % attempts.length];
 
         if (!hasComposerPayloadState(afterState)) {
@@ -3202,6 +3359,7 @@
           liveComposer,
           Math.max(attempt.timeoutMs, getSubmissionRetryGuardRemainingMs(liveComposer, afterState)),
         );
+        assertDeliveryActive();
 
         liveComposer = findComposer() || liveComposer;
         afterState = captureComposerSubmitState(liveComposer);
@@ -3222,6 +3380,7 @@
     }
 
     function captureResponseBaselineBeforeSubmit() {
+      assertDeliveryActive();
       if (!payload.waitForResponse || responseBaselineCaptured) return;
       // A composer és a feltöltés várakozása közben érkező előzmény nem új kérés.
       // Retry során viszont már az első próbálkozás userét kell megőriznünk.
@@ -3233,13 +3392,18 @@
     function fireClickSequence(element) {
       captureResponseBaselineBeforeSubmit();
       element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+      assertDeliveryActive();
       element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+      assertDeliveryActive();
       element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+      assertDeliveryActive();
       element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, button: 0 }));
+      assertDeliveryActive();
       element.click();
     }
 
     function dispatchFormSubmit(form) {
+      assertDeliveryActive();
       try {
         captureResponseBaselineBeforeSubmit();
         form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -3257,6 +3421,7 @@
       ];
 
       for (const event of events) {
+        assertDeliveryActive();
         element.dispatchEvent(event);
       }
     }
@@ -3295,8 +3460,10 @@
     }
 
     async function waitForNextStateTurn(timeoutMs) {
+      assertDeliveryActive();
       const boundedTimeout = Math.max(FRAME_INTERVAL_MS, Number(timeoutMs) || FRAME_INTERVAL_MS);
-      await ensureDomActivityTracker().waitForChange(boundedTimeout);
+      await ensureDomActivityTracker().waitForChange(boundedTimeout, operation.cancellationPromise);
+      assertDeliveryActive();
     }
 
     async function waitForStateChange(readState, getStateKey, previousState, timeoutMs) {
@@ -3305,6 +3472,7 @@
       const startedAt = Date.now();
 
       while (Date.now() - startedAt < timeoutMs) {
+        assertDeliveryActive();
         const currentState = readState();
 
         if ((typeof getStateKey === "function" ? getStateKey(currentState) : "") !== previousKey) {
@@ -3317,7 +3485,9 @@
           break;
         }
 
-        if (await domTracker.waitForChange(remainingTime) !== "change") {
+        const changeReason = await domTracker.waitForChange(remainingTime, operation.cancellationPromise);
+        assertDeliveryActive();
+        if (changeReason !== "change") {
           break;
         }
       }

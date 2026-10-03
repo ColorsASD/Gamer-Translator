@@ -20,6 +20,7 @@ const helperNames = [
   'isStableAssistantSnapshot', 'hasActiveGenerationControl',
   'captureResponseBaselineBeforeSubmit',
   'reportAssistantSnapshotDiagnostic',
+  'getUiMessageHeadingRole', 'getMessageAuthorEvidence', 'getMessageStableId',
 ];
 // Csak a tesztpéldány kap hozzáférést a belső függvényekhez; az éles forrás nem exportál teszt API-t.
 const hook = helperNames.map((name) => `
@@ -259,13 +260,80 @@ test('Párhuzamos kézbesítés nem írhatja felül az aktív promptot', async (
   const harness = createHarness({ overrides: { waitForPromptApplied: async (composer) => { await hold; return composer; } } });
   const first = harness.window.__gamerTranslatorDeliver({ prompt: 'Első', autoSubmit: false });
   await flush();
-  const second = await harness.window.__gamerTranslatorDeliver({ prompt: 'Második', autoSubmit: false });
+  const second = await harness.window.__gamerTranslatorDeliver({ prompt: 'Második', autoSubmit: false, diagnosticCallId: 'busy-rejection' });
   assert.equal(second.ok, false);
   assert.match(second.error, /folyamatban/);
+  assert.equal(harness.window.__gamerTranslatorDiagnostics['busy-rejection'][0].event, 'delivery_rejected');
+  assert.equal(harness.window.__gamerTranslatorDiagnostics['busy-rejection'][0].fields.reason, 'delivery_busy');
   assert.equal(harness.composer.value, 'Első');
   release();
   assert.equal((await first).ok, true);
   assert.equal((await harness.window.__gamerTranslatorDeliver({ prompt: 'Harmadik', autoSubmit: false })).ok, true);
+});
+
+test('Előzetes megszakítás után a késve végrehajtott küldés nem írhatja át a composert', async () => {
+  const harness = createHarness();
+  assert.equal(harness.window.__gamerTranslatorCancelDelivery('late-call').ok, true);
+  assert.equal(harness.window.__gamerTranslatorIsDeliveryCancelled('late-call'), true);
+  const result = await harness.window.__gamerTranslatorDeliver({ prompt: 'Elavult szöveg', autoSubmit: true, deliveryCallId: 'late-call' });
+  assert.equal(result.ok, false); assert.equal(result.cancelled, true); assert.equal(harness.composer.value, '');
+  for (const invalid of ['', 'invalid id', {}, 42]) {
+    assert.equal(harness.window.__gamerTranslatorCancelDelivery(invalid).ok, false);
+    assert.equal((await harness.window.__gamerTranslatorDeliver({ prompt: 'Tiltott', deliveryCallId: invalid })).ok, false);
+  }
+  assert.equal((await harness.window.__gamerTranslatorDeliver({ prompt: 'Új szöveg', autoSubmit: false, deliveryCallId: 'new-call' })).ok, true);
+  assert.equal(harness.composer.value, 'Új szöveg');
+});
+
+test('Megszakított régi finally nem oldhatja fel a már elindult új küldés zárát', async () => {
+  let releaseOld, releaseNew, submitCount = 0;
+  const oldGate = new Promise((resolve) => { releaseOld = resolve; });
+  const newGate = new Promise((resolve) => { releaseNew = resolve; });
+  const harness = createHarness({ overrides: {
+    waitForPromptApplied: async (composer, prompt) => { await (prompt === 'Régi' ? oldGate : newGate); return composer; },
+    submitTextMessage: async () => { submitCount += 1; },
+  } });
+  const oldDelivery = harness.window.__gamerTranslatorDeliver({ prompt: 'Régi', autoSubmit: true, deliveryCallId: 'old-call' });
+  await flush();
+  assert.equal(harness.window.__gamerTranslatorComposerAutoRecovery.suspendedCount, 1);
+  assert.equal(harness.window.__gamerTranslatorCancelDelivery('different-call').active, false);
+  assert.equal(harness.window.__gamerTranslatorComposerAutoRecovery.suspendedCount, 1);
+  assert.equal(harness.window.__gamerTranslatorCancelDelivery('old-call').active, true);
+  assert.equal(harness.window.__gamerTranslatorComposerAutoRecovery.suspendedCount, 0);
+  const newDelivery = harness.window.__gamerTranslatorDeliver({ prompt: 'Új', autoSubmit: true, deliveryCallId: 'new-call' });
+  await flush();
+  assert.equal(harness.window.__gamerTranslatorComposerAutoRecovery.suspendedCount, 1);
+  releaseOld(); const oldResult = await oldDelivery;
+  assert.equal(oldResult.cancelled, true); assert.equal(submitCount, 0);
+  assert.equal(harness.window.__gamerTranslatorComposerAutoRecovery.suspendedCount, 1);
+  assert.equal((await harness.window.__gamerTranslatorDeliver({ prompt: 'Harmadik', deliveryCallId: 'third-call' })).ok, false);
+  releaseNew(); assert.equal((await newDelivery).ok, true); assert.equal(submitCount, 1);
+  assert.equal(harness.window.__gamerTranslatorComposerAutoRecovery.suspendedCount, 0);
+});
+
+test('Megszakítás a valódi válaszvárakozást azonnal lezárja késői figyelés nélkül', async () => {
+  let submitCount = 0;
+  const harness = createHarness({ overrides: { submitTextMessage: async () => { submitCount += 1; } } });
+  const pending = harness.window.__gamerTranslatorDeliver({ prompt: 'Kérés', autoSubmit: true, waitForResponse: true,
+    responseTimeoutMs: 600000, deliveryCallId: 'response-call', progressCallId: 'response-progress', diagnosticCallId: 'response-diagnostic' });
+  await flush(); assert.equal(submitCount, 1);
+  assert.equal(harness.window.__gamerTranslatorCancelDelivery('response-call').active, true);
+  const result = await pending;
+  assert.equal(result.cancelled, true); assert.equal(result.ok, false);
+  assert.equal(Object.keys(harness.window.__gamerTranslatorAssistantResponseFollowUps || {}).length, 0);
+  assert.equal(harness.window.__gamerTranslatorComposerAutoRecovery.suspendedCount, 0);
+  assert.equal(harness.window.__gamerTranslatorDiagnostics['response-diagnostic'].some((entry) => entry.event === 'delivery_cancelled'), true);
+});
+
+test('Csatoló folytatás megszakítás után nem küldhet képet', async () => {
+  let releaseAttachment;
+  const gate = new Promise((resolve) => { releaseAttachment = resolve; });
+  const harness = createHarness({ overrides: { attachImage: async (composer) => { await gate; return composer; } } });
+  const pending = harness.window.__gamerTranslatorDeliver({ imageDataUrl: 'data:image/png;base64,aGVsbG8=', autoSubmit: true, deliveryCallId: 'attachment-call' });
+  await flush(); assert.equal(harness.window.__gamerTranslatorCancelDelivery('attachment-call').active, true);
+  releaseAttachment(); const result = await pending;
+  assert.equal(result.cancelled, true); assert.equal(harness.window.__gamerTranslatorComposerAutoRecovery.suspendedCount, 0);
+  assert.equal((await harness.window.__gamerTranslatorDeliver({ prompt: 'Következő', autoSubmit: false, deliveryCallId: 'next-call' })).ok, true);
 });
 
 test('Kép adatURL MIME-, base64- és méretellenőrzése', () => {
@@ -529,6 +597,7 @@ test('A diagnosztika korlátos és kizárja a szöveget, képet és URL-t', () =
   }
   const entries = harness.window.__gamerTranslatorDiagnostics['diagnostic-test'];
   assert.equal(entries.length, 100); assert.equal(entries[0].fields.text_length, 50);
+  assert.equal(entries[0].seq, 51); assert.equal(entries.at(-1).seq, 150);
   assert.deepEqual(Object.keys(entries[0].fields).sort(), ['pending', 'stage', 'text_length']);
   const serialized = JSON.stringify(entries);
   assert.equal(serialized.includes('titkos'), false); assert.equal(serialized.includes('data:image'), false); assert.equal(serialized.includes('https://'), false);
@@ -778,7 +847,25 @@ function modernDomHarness() {
     installQueries(harness.document);
     return { turn, userUnit, userHeading, image, assistantBody };
   };
-  return { harness, addTurn, addRoleImageTurn, refreshQueries: () => installQueries(harness.document) };
+  const addLiveHeadingImageTurn = (index, text) => {
+    const result = addRoleImageTurn(index, text);
+    const { userUnit, userHeading, image } = result;
+    userUnit.attributes.delete('data-message-id');
+    userHeading.attributes.delete('data-conversation-role');
+    userHeading.replaceChildren(new FakeText('You said:'));
+    userUnit.childNodes = userUnit.childNodes.filter((node) => node !== image);
+    const content = userUnit.appendChild(new FakeElement('div'));
+    content.setAttribute('data-chatgpt-search-unit-key', `live-user-unit-${index}`);
+    content.setAttribute('data-chatgpt-search-message-ids', `["live-user-${index}"]`);
+    const imageWrapper = content.appendChild(new FakeElement('div'));
+    const viewer = imageWrapper.appendChild(new FakeElement('div')); viewer.setAttribute('role', 'button');
+    viewer.setAttribute('aria-label', 'Enlarge image');
+    image.setAttribute('src', `blob:https://chatgpt.com/synthetic-image-${index}`);
+    image.setAttribute('data-state', 'loaded'); viewer.appendChild(image);
+    installQueries(harness.document);
+    return { ...result, content, imageWrapper, viewer };
+  };
+  return { harness, addTurn, addRoleImageTurn, addLiveHeadingImageTurn, refreshQueries: () => installQueries(harness.document) };
 }
 
 test('Az új, article nélküli ChatGPT DOM szerepei és üzenetazonosítói felismerhetők', () => {
@@ -815,6 +902,138 @@ test('Szerepfejléces kép-only user kör keresőattribútumok és bubble nélk�
     assert.equal(current.lastUserStableId, 'message:role-image-user-2', boundary);
     assert.equal(current.responseUserKey, current.lastUserKey, boundary);
     assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), true, boundary);
+  }
+});
+
+test('Az igazolt élő attribútum nélküli UI-fejléc a saját stabil képkörét és két azonos választ köti', async () => {
+  const { harness, addTurn, addLiveHeadingImageTurn } = modernDomHarness();
+  addTurn(1, 'Korábbi fordítás');
+  const userKeys = [];
+  for (const index of [2, 3]) {
+    const previous = harness.helpers.captureAssistantSnapshot();
+    const { userHeading, image } = addLiveHeadingImageTurn(index, 'Azonos kész fordítás.');
+    const current = harness.helpers.captureAssistantSnapshot();
+    assert.equal(current.userCount, index); assert.equal(current.count, index);
+    assert.equal(current.lastUserStableId, `messages:["live-user-${index}"]`);
+    assert.equal(current.lastUserRoleSource, 'heading_role');
+    assert.equal(current.responseUserKey, current.lastUserKey);
+    assert.equal(harness.helpers.getUiMessageHeadingRole(userHeading), 'user');
+    assert.equal(harness.helpers.getMessageAuthorEvidence(image).role, 'user');
+    assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), true);
+    userKeys.push(current.lastUserKey);
+    await harness.window.__gamerTranslatorDeliver({ prompt: 'Diagnosztikapróba', diagnosticCallId: `live-heading-${index}` });
+    harness.helpers.reportAssistantSnapshotDiagnostic(current, previous);
+    const fields = harness.window.__gamerTranslatorDiagnostics[`live-heading-${index}`].at(-1).fields;
+    assert.equal(fields.user_role_source, 'heading_role');
+    assert.equal(fields.request_user_bound, true); assert.equal(fields.fresh, true);
+    assert.equal(fields.user_role_candidates, index); assert.equal(fields.clickable_image_candidates, index - 1);
+  }
+  assert.notEqual(...userKeys);
+});
+
+test('A belső saját keresőazonosítót közös user-assistant külső message-id nem írja felül', () => {
+  const { harness, addTurn, addLiveHeadingImageTurn, refreshQueries } = modernDomHarness();
+  addTurn(1, 'Korábbi fordítás');
+  const previous = harness.helpers.captureAssistantSnapshot();
+  const { turn, content } = addLiveHeadingImageTurn(2, 'Új képkör fordítása.');
+  turn.setAttribute('data-message-id', 'shared-outer-turn-id'); refreshQueries();
+  const current = harness.helpers.captureAssistantSnapshot();
+  assert.equal(harness.helpers.getMessageStableId(content), 'messages:["live-user-2"]');
+  assert.equal(current.lastUserStableId, 'messages:["live-user-2"]');
+  assert.equal(current.lastStableId, 'message:role-image-answer-2');
+  assert.notEqual(current.lastUserStableId, current.lastStableId);
+  assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), true);
+});
+
+test('UI-fejléc helyett idézett tartalom, pontatlan név és határ nélküli kép nem bizonyíthat user szerepet', () => {
+  const invalidKinds = ['non-heading', 'not-sr-only', 'partial-label', 'no-own-boundary', 'empty-identity', 'multiple-content-units',
+    'quoted', 'code', 'markdown', 'search-content', 'assistant-wrapper', 'mixed-role',
+    'hidden-heading', 'hidden-image', 'hidden-wrapper', 'aria-hidden-heading', 'avatar', 'menu', 'toolbar'];
+  for (const kind of invalidKinds) {
+    const { harness, addTurn, addLiveHeadingImageTurn, refreshQueries } = modernDomHarness();
+    addTurn(1, 'Korábbi fordítás');
+    const previous = harness.helpers.captureAssistantSnapshot();
+    const { userUnit, userHeading, content, imageWrapper, image } = addLiveHeadingImageTurn(2, 'Különálló új asszisztensválasz.');
+    if (kind === 'non-heading') userHeading.tagName = 'DIV';
+    else if (kind === 'not-sr-only') userHeading.setAttribute('class', '');
+    else if (kind === 'partial-label') userHeading.replaceChildren(new FakeText('Young user: You said:'));
+    else if (kind === 'no-own-boundary') { content.attributes.delete('data-chatgpt-search-unit-key'); content.attributes.delete('data-chatgpt-search-message-ids'); }
+    else if (kind === 'empty-identity') content.setAttribute('data-chatgpt-search-message-ids', '');
+    else if (kind === 'multiple-content-units') { const other = userUnit.appendChild(new FakeElement('div')); other.setAttribute('data-chatgpt-search-unit-key', 'other-user'); other.setAttribute('data-chatgpt-search-message-ids', 'other-id'); }
+    else if (['quoted', 'code', 'markdown', 'search-content'].includes(kind)) {
+      userUnit.childNodes = userUnit.childNodes.filter((node) => node !== userHeading);
+      if (kind === 'search-content') content.appendChild(userHeading);
+      else { const wrapper = userUnit.appendChild(new FakeElement(kind === 'quoted' ? 'blockquote' : kind === 'code' ? 'code' : 'div'));
+        if (kind === 'markdown') wrapper.setAttribute('data-markdown-text-style', ''); wrapper.appendChild(userHeading); }
+    } else if (kind === 'assistant-wrapper') userUnit.setAttribute('data-message-author-role', 'assistant');
+    else if (kind === 'mixed-role') { const other = userUnit.appendChild(new FakeElement('h4')); other.setAttribute('data-conversation-role', 'assistant'); }
+    else if (kind === 'hidden-heading') userHeading.hidden = true;
+    else if (kind === 'hidden-image') image.hidden = true;
+    else if (kind === 'hidden-wrapper') userUnit.setAttribute('hidden', '');
+    else if (kind === 'aria-hidden-heading') userHeading.setAttribute('aria-hidden', 'true');
+    else if (kind === 'avatar') imageWrapper.setAttribute('data-slot', 'avatar');
+    else imageWrapper.setAttribute('role', kind);
+    refreshQueries();
+    const current = harness.helpers.captureAssistantSnapshot();
+    assert.equal(current.userCount, 1, kind);
+    assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), false, kind);
+    assert.equal(Boolean(previous.requestUserKey), false, kind);
+  }
+});
+
+test('Keresőüzenet belsejében idézett plain assistant UI-fejléc sem adhat szerepet', () => {
+  const { harness, addLiveHeadingImageTurn, refreshQueries } = modernDomHarness();
+  const { userUnit, userHeading, content } = addLiveHeadingImageTurn(1, 'Különálló válasz.');
+  userUnit.childNodes = userUnit.childNodes.filter((node) => node !== userHeading);
+  userHeading.replaceChildren(new FakeText('ChatGPT said:')); content.appendChild(userHeading); refreshQueries();
+  assert.equal(harness.helpers.getUiMessageHeadingRole(userHeading), '');
+  assert.equal(harness.helpers.getMessageAuthorEvidence(content).role, '');
+  assert.equal(harness.helpers.findUserMessageNodes().length, 0);
+});
+
+test('Kattintható kép explicit user szerep mellett a második kérés saját válaszához köthető', async () => {
+  for (const buttonKind of ['button', 'role-button', 'dialog-button', 'dialog-role-button']) {
+    const { harness, addTurn, addRoleImageTurn, refreshQueries } = modernDomHarness();
+    addTurn(1, 'Korábbi fordítás');
+    const previous = harness.helpers.captureAssistantSnapshot();
+    const { userUnit, image } = addRoleImageTurn(2, 'A második kép kész fordítása.');
+    userUnit.childNodes = userUnit.childNodes.filter((node) => node !== image);
+    const nativeButton = buttonKind === 'button' || buttonKind === 'dialog-button';
+    const viewer = userUnit.appendChild(new FakeElement(nativeButton ? 'button' : 'div'));
+    if (nativeButton) viewer.setAttribute('type', 'button');
+    else viewer.setAttribute('role', 'button');
+    if (buttonKind.startsWith('dialog-')) viewer.setAttribute('aria-haspopup', 'dialog');
+    viewer.appendChild(image); refreshQueries();
+    const current = harness.helpers.captureAssistantSnapshot();
+    assert.equal(current.userCount, 2, buttonKind);
+    assert.equal(current.responseUserKey, current.lastUserKey, buttonKind);
+    assert.equal(harness.helpers.isFreshAssistantSnapshot(current, previous), true, buttonKind);
+    await harness.window.__gamerTranslatorDeliver({ prompt: 'Diagnosztikapróba', diagnosticCallId: 'clickable-diagnostic' });
+    harness.helpers.reportAssistantSnapshotDiagnostic(current, previous);
+    const fields = harness.window.__gamerTranslatorDiagnostics['clickable-diagnostic'].at(-1).fields;
+    assert.equal(fields.user_role_candidates, 2); assert.equal(fields.clickable_image_candidates, 1);
+  }
+});
+
+test('Explicit user szerep mellett is kizárt az avatar, menü, toolbar és beküldőikon képe', () => {
+  for (const invalidKind of ['avatar-image', 'avatar-wrapper', 'profile-alt', 'menu', 'toolbar', 'radix-menu', 'radix-dropdown', 'popup-button', 'submit-button', 'avatar-dialog', 'menu-dialog']) {
+    const { harness, addRoleImageTurn, refreshQueries } = modernDomHarness();
+    const { userUnit, image } = addRoleImageTurn(1, 'Különálló kész asszisztensválasz.');
+    userUnit.childNodes = userUnit.childNodes.filter((node) => node !== image);
+    const wrapper = userUnit.appendChild(new FakeElement('div'));
+    const button = wrapper.appendChild(new FakeElement('button')); button.setAttribute('type', 'button'); button.appendChild(image);
+    if (invalidKind === 'avatar-image') image.setAttribute('data-testid', 'user-avatar');
+    else if (invalidKind === 'avatar-wrapper') wrapper.setAttribute('data-slot', 'avatar');
+    else if (invalidKind === 'profile-alt') image.setAttribute('alt', 'User profile picture');
+    else if (invalidKind === 'menu' || invalidKind === 'toolbar') wrapper.setAttribute('role', invalidKind);
+    else if (invalidKind === 'radix-menu') wrapper.setAttribute('data-radix-menu-content', '');
+    else if (invalidKind === 'radix-dropdown') wrapper.setAttribute('data-radix-dropdown-menu-content', '');
+    else if (invalidKind === 'popup-button') button.setAttribute('aria-haspopup', 'menu');
+    else if (invalidKind === 'avatar-dialog') { button.setAttribute('aria-haspopup', 'dialog'); button.setAttribute('aria-label', 'Open user avatar'); }
+    else if (invalidKind === 'menu-dialog') { button.setAttribute('aria-haspopup', 'dialog'); wrapper.setAttribute('role', 'menu'); }
+    else button.setAttribute('type', 'submit');
+    refreshQueries();
+    assert.equal(harness.helpers.findUserMessageNodes().length, 0, invalidKind);
   }
 });
 
